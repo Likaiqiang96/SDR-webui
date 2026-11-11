@@ -84,6 +84,7 @@ struct Params {
     int bits = 12;
     bool paused = true;
     bool stereo = true;        // FM 立体声解码
+    double spec_fps = 12.0;    // 频谱/瀑布刷新率（帧/秒）
     double denoise_amt = 1.0;  // 降噪强度 0..1
 };
 
@@ -96,6 +97,7 @@ static std::atomic<int> g_clients{0};
 static std::atomic<bool> g_scan_req{false};
 static std::atomic<double> g_iq_mbps{0}, g_down_kbps{0}, g_audio_kbps{0};
 static std::atomic<double> g_snr{0};
+static std::atomic<double> g_spec_fps{12.0};
 static std::atomic<int> g_adc_bits{0};      // 0 = 未知（设备没开）
 static std::mutex g_adc_mtx;
 static std::string g_adc_name;
@@ -652,7 +654,7 @@ json Sdr::params_json() {
     return json{{"freq", g_p.freq}, {"rate", g_p.rate}, {"offset", g_p.offset},
                 {"bw", g_p.bw}, {"squelch", g_p.squelch}, {"gain", g_p.gain},
                 {"mode", g_p.mode}, {"bits", g_p.bits}, {"paused", g_p.paused},
-                {"stereo", g_p.stereo}};
+                {"stereo", g_p.stereo}, {"spec_fps", g_p.spec_fps}};
 }
 
 void Sdr::apply(const json& kw) {
@@ -680,6 +682,11 @@ void Sdr::apply(const json& kw) {
         }
         if (kw.contains("bits") && kw["bits"].is_number()) g_p.bits = kw["bits"].get<int>();
         if (kw.contains("paused") && kw["paused"].is_boolean()) g_p.paused = kw["paused"].get<bool>();
+        if (kw.contains("spec_fps") && kw["spec_fps"].is_number()) {
+            g_p.spec_fps = std::max(2.0, std::min(60.0, kw["spec_fps"].get<double>()));
+            g_spec_fps = g_p.spec_fps;
+            logf_("频谱刷新率 -> %.0f fps", g_p.spec_fps);
+        }
         if (kw.contains("stereo") && kw["stereo"].is_boolean()) {
             if (g_p.stereo != kw["stereo"].get<bool>()) mode_dirty = true;
             g_p.stereo = kw["stereo"].get<bool>();
@@ -807,7 +814,9 @@ void Sdr::read_block() {
     spec_acc_.insert(spec_acc_.end(), z, z + n);
     if ((int)spec_acc_.size() > fft_n_ * 4)
         spec_acc_.erase(spec_acc_.begin(), spec_acc_.end() - fft_n_ * 2);
-    if (now_s() - spec_mark_t_ >= 0.08 && !scanning_) {
+    double fps = g_spec_fps.load();
+    if (fps < 1.0) fps = 1.0;
+    if (now_s() - spec_mark_t_ >= 1.0 / fps && !scanning_) {
         spec_mark_t_ = now_s();
         push_spectrum();
     }
@@ -857,6 +866,7 @@ void Sdr::push_spectrum() {
     frame.append((const char*)out, SPEC_BINS);
     spec_bytes_ += (double)frame.size();
     broadcast_bin(frame.data(), frame.size(), false);
+
 }
 
 void Sdr::demod(const cfloat* zin, int n) {
@@ -1188,7 +1198,7 @@ void Sdr::push_status() {
            {"audio_kbps", (double)g_audio_kbps}, {"codec", "opus"},
            {"clients", (int)g_clients}, {"snr", (double)g_snr},
            {"audio_rate", audio_rate_out_}, {"error", g_error},
-           {"stereo", p.stereo}, {"channels", out_ch_}};
+           {"stereo", p.stereo}, {"channels", out_ch_}, {"spec_fps", p.spec_fps}};
     broadcast_text(j.dump());
 }
 

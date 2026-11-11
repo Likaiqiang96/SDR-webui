@@ -235,6 +235,7 @@ class SDR(threading.Thread):
             'mode': 'WFM',         # WFM/NFM/AM/USB/LSB/CW/DSB/RAW
             'bw': 180000.0,        # 解调带宽 Hz
             'squelch': -100.0,     # dB，-100 = 关闭
+            'spec_fps': 15.0,      # 频谱刷新率（帧/秒）
             'offset': 0.0,         # VFO 相对 LO 的偏移 Hz
             'paused': True,
             'codec': 'pcm',         # pcm 默认（兼容旧页面）；新页面收听时切 opus
@@ -464,7 +465,7 @@ class SDR(threading.Thread):
         while total > FFT_N * 4 and len(self._spec_acc) > 1:
             total -= len(self._spec_acc[0])
             self._spec_acc.pop(0)
-        if now - self._spec_last >= 1.0 / SPEC_FPS:
+        if now - self._spec_last >= 1.0 / max(1.0, float(p.get('spec_fps', SPEC_FPS))):
             self._spec_last = now
             if not self.scanning:
                 self._push_spectrum()
@@ -656,6 +657,7 @@ class SDR(threading.Thread):
             'codec': 'opus' if self.hub.opus_encoders() else 'pcm',
             'bw': p.get('bw', 180000.0),
             'squelch': p.get('squelch', -100.0),
+            'spec_fps': p.get('spec_fps', SPEC_FPS),
             'offset': p.get('offset', 0.0),
             'paused': bool(p.get('paused', False)),
             'snr': round(self.snr, 1),
@@ -836,7 +838,8 @@ class App:
         cmd = m.get('cmd')
         if cmd == 'set':
             kw = {}
-            for k in ('freq', 'rate', 'gain', 'bits', 'mode', 'bw', 'squelch', 'offset', 'paused'):
+            for k in ('freq', 'rate', 'gain', 'bits', 'mode', 'bw', 'squelch', 'offset', 'paused',
+                      'stereo', 'spec_fps'):
                 if k in m:
                     kw[k] = m[k]
             p = self.sdr.apply(**kw)

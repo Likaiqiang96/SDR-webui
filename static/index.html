@@ -220,6 +220,15 @@
           <div class="row"><label>自动 dB</label><input type="checkbox" id="autoDb" checked style="flex:none"></div>
           <div class="row"><label>峰值保持</label><input type="checkbox" id="peakHold" style="flex:none"></div>
           <div class="row"><label>FFT 平滑</label><input type="checkbox" id="smooth" checked style="flex:none"></div>
+          <div class="row"><label>刷新率</label>
+            <select id="fps">
+              <option value="5">5 fps（省 CPU）</option>
+              <option value="10">10 fps</option>
+              <option value="15" selected>15 fps（默认）</option>
+              <option value="20">20 fps</option>
+              <option value="30">30 fps</option>
+              <option value="40">40 fps（流畅）</option>
+            </select></div>
           <div class="hint">滚轮缩放；点击调谐；拖红线上的色块边缘改带宽。</div>
         </div>
       </section>
@@ -652,6 +661,7 @@ function onJson(m) {
     if (document.activeElement !== $('gain')) { $('gain').value = Math.round(m.gain); $('gainTxt').textContent = Math.round(m.gain) + ' dB'; }
     if (document.activeElement !== $('mode')) $('mode').value = m.mode;
     if (document.activeElement !== $('bw')) { $('bw').value = bwToSlider(m.bw); $('bwTxt').textContent = fmtBw(m.bw); }
+    if (m.spec_fps && document.activeElement !== $('fps')) $('fps').value = String(Math.round(m.spec_fps));
     if (document.activeElement !== $('sq')) { $('sq').value = m.squelch; $('sqTxt').textContent = m.squelch <= -99 ? '关闭' : m.squelch + ' dB'; }
 
   } else if (m.type === 'autotune_started') {
@@ -877,6 +887,7 @@ $('scolor').onchange = () => { S.scolor = $('scolor').value; updatePlotColor(); 
 $('bplan').onchange = () => loadBandplan($('bplan').value);
 $('peakHold').onchange = () => { S.holdPeak = $('peakHold').checked; if (!S.holdPeak) S.peak.fill(-120); };
 $('smooth').onchange = () => { S.smooth = $('smooth').checked; };
+$('fps').onchange = () => send({ cmd: 'set', spec_fps: Number($('fps').value) });
 $('zoom').oninput = () => setZoom(sliderToZoom(Number($('zoom').value)));
 function sliderToZoom(v) { return Math.pow(32, v / 100); }
 $('abuf').oninput = () => {

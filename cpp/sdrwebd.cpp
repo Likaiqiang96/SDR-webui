@@ -84,7 +84,6 @@ struct Params {
     int bits = 12;
     bool paused = true;
     double spec_fps = 12.0;    // 频谱/瀑布刷新率（帧/秒）
-    double denoise_amt = 1.0;  // 降噪强度 0..1
 };
 
 static std::mutex g_mtx;
@@ -802,7 +801,6 @@ void Sdr::apply(const json& kw) {
             g_spec_fps = g_p.spec_fps;
             logf_("频谱刷新率 -> %.0f fps", g_p.spec_fps);
         }
-        if (kw.contains("denoise_amt") && kw["denoise_amt"].is_number()) g_p.denoise_amt = kw["denoise_amt"].get<double>();
     }
     if (rate_changed || mode_dirty) rate_dirty_ = true;
     g_dirty = true;

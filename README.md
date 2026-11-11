@@ -20,7 +20,8 @@
 - **按需采集**：没人开页面 → 设备完全释放；开了页面也要点 ▶ 才开始；关页面自动停
 
 **音频**
-- 服务端 Opus 编码（ffmpeg），浏览器 MSE 播放，**下行 ≈ 18–20 KB/s**（不传原始 IQ）
+- 服务端 **libopus + 自带 WebM 封装**（C++ 版，每 10 ms 一帧直发），浏览器 MSE 播放，**下行 ≈ 20 KB/s**（不传原始 IQ）
+- 点「开始收听」到出声 **约 1.3 s**（之前用 ffmpeg 子进程时，它的 32 KB 输出缓冲要攒满才吐数据，实测要 4–5 s）
 - 自适应缓冲（0.45–0.9 s）+ 播放速率微调，实测 0 次断流
 
 **数据**
@@ -56,7 +57,7 @@
 ### 依赖
 
 ```bash
-sudo apt install libsoapysdr-dev libfftw3-dev nlohmann-json3-dev ffmpeg \
+sudo apt install libsoapysdr-dev libfftw3-dev libopus-dev nlohmann-json3-dev ffmpeg \
                  python3-aiohttp python3-numpy python3-scipy
 # SDRplay API + SoapySDRPlay 模块需按 SDRplay 官方文档安装
 ```

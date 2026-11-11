@@ -7,6 +7,7 @@
 #include <SoapySDR/Formats.hpp>
 #include <fftw3.h>
 #include <nlohmann/json.hpp>
+#include <opus/opus.h>
 
 #include <algorithm>
 #include <atomic>
@@ -270,75 +271,177 @@ static void bookmarks_save(const json& j) {
     rename(tmp.c_str(), g_bookmark_file.c_str());
 }
 
-// ------------------------------------------------------------------ Opus 编码器（ffmpeg 子进程）
+// ------------------------------------------------------------------ Opus + WebM（libopus，自己做封装）
+// 之前用 ffmpeg 子进程：它的 AVIO 输出缓冲要攒满 32KB 才吐数据，听感上"点收听要等 5 秒"。
+// 这里直接 libopus 编码 + 手写最小 WebM 封装，每 10ms 立即下发。
+
+static std::atomic<double> g_opus_bytes{0};
+static std::atomic<int> g_enc_count{0};
+
+static void put_u8(std::string& o, uint8_t v) { o.push_back((char)v); }
+static void put_be(std::string& o, uint64_t v, int n) {
+    for (int i = n - 1; i >= 0; i--) o.push_back((char)((v >> (i * 8)) & 0xff));
+}
+static void put_id(std::string& o, uint32_t id, int n) { put_be(o, id, n); }
+static void put_size(std::string& o, uint64_t v) {
+    int n = 1;
+    while (n < 8 && v >= ((1ULL << (7 * n)) - 1)) n++;
+    std::string tmp;
+    tmp.push_back((char)((1 << (8 - n)) | (v >> ((n - 1) * 8))));
+    for (int i = n - 2; i >= 0; i--) tmp.push_back((char)((v >> (i * 8)) & 0xff));
+    o += tmp;
+}
+static void put_elem(std::string& o, uint32_t id, int idlen, const std::string& payload) {
+    put_id(o, id, idlen);
+    put_size(o, payload.size());
+    o += payload;
+}
+static void put_uint(std::string& o, uint32_t id, int idlen, uint64_t v) {
+    std::string p;
+    int n = 1;
+    while (n < 8 && v >= (1ULL << (8 * n))) n++;
+    put_be(p, v, n);
+    put_elem(o, id, idlen, p);
+}
+static void put_float(std::string& o, uint32_t id, int idlen, double v) {
+    std::string p((const char*)&v, 8);   // 小端 double
+    put_elem(o, id, idlen, p);
+}
+static void put_str(std::string& o, uint32_t id, int idlen, const std::string& v) {
+    put_elem(o, id, idlen, v);
+}
+
 class OpusEnc {
   public:
     OpusEnc(const std::function<void(const char*, size_t)>& sink) : sink_(sink) {}
     ~OpusEnc() { close(); }
 
-    bool start(double rate) {
-        int ip[2], op[2];
-        if (pipe(ip) || pipe(op)) return false;
-        pid_ = fork();
-        if (pid_ == 0) {
-            dup2(ip[0], 0);
-            dup2(op[1], 1);
-            ::close(ip[0]); ::close(ip[1]); ::close(op[0]); ::close(op[1]);
-            execlp("ffmpeg", "ffmpeg", "-hide_banner", "-loglevel", "error",
-                   "-f", "s16le", "-ar", std::to_string((int)rate).c_str(), "-ac", "1", "-i", "pipe:0",
-                   "-c:a", "libopus", "-b:a", "40000", "-vbr", "on",
-                   "-application", "audio", "-frame_duration", "10",
-                   "-cluster_time_limit", "60", "-cluster_size_limit", "0",
-                   "-f", "webm", "pipe:1", (char*)nullptr);
-            _exit(127);
-        }
-        ::close(ip[0]);
-        ::close(op[1]);
-        in_ = ip[1];
-        out_ = op[0];
-        reader_ = std::thread([this] {
-            char buf[4096];
-            while (true) {
-                ssize_t n = read(out_, buf, sizeof(buf));
-                if (n <= 0) break;
-                if (closed_) break;
-                sink_(buf, (size_t)n);
-            }
-        });
+    bool start(double rate, int channels = 1) {
+        in_rate_ = rate;
+        ch_ = channels;
+        int err = 0;
+        enc_ = opus_encoder_create(48000, ch_, OPUS_APPLICATION_AUDIO, &err);
+        if (err != OPUS_OK || !enc_) { enc_ = nullptr; return false; }
+        opus_encoder_ctl(enc_, OPUS_SET_BITRATE(48000));
+        opus_encoder_ctl(enc_, OPUS_SET_VBR(1));
+        send_header();
         return true;
     }
 
-    void write(const int16_t* pcm, size_t n) {
-        if (in_ < 0 || closed_) return;
-        size_t bytes = n * 2;
-        const char* p = (const char*)pcm;
-        while (bytes) {
-            ssize_t w = ::write(in_, p, bytes);
-            if (w <= 0) break;
-            p += w;
-            bytes -= (size_t)w;
+    void write(const int16_t* pcm, size_t frames) {
+        if (!enc_) return;
+        resample(pcm, frames);
+        size_t off = 0;
+        while (buf48_.size() - off >= 480) {
+            unsigned char pkt[4000];
+            int n = opus_encode(enc_, &buf48_[off], 480, pkt, sizeof(pkt));
+            if (n > 1) {
+                add_block(pkt, (size_t)n);
+                g_opus_bytes.store(g_opus_bytes.load() + (double)n);
+            }
+            off += 480;
+            time_ms_ += 10;
         }
+        buf48_.erase(buf48_.begin(), buf48_.begin() + off);
     }
 
     void close() {
-        if (closed_.exchange(true)) return;
-        if (in_ >= 0) { ::close(in_); in_ = -1; }
-        if (reader_.joinable()) reader_.join();
-        if (out_ >= 0) { ::close(out_); out_ = -1; }
-        if (pid_ > 0) { int st; waitpid(pid_, &st, WNOHANG); pid_ = -1; }
+        if (enc_) { opus_encoder_destroy(enc_); enc_ = nullptr; }
     }
 
   private:
+    void send_header() {
+        std::string h;
+        std::string ebml;
+        put_uint(ebml, 0x4286, 2, 1);          // EBMLVersion
+        put_uint(ebml, 0x42F7, 2, 1);          // EBMLReadVersion
+        put_uint(ebml, 0x42F2, 2, 4);          // EBMLMaxIDLength
+        put_uint(ebml, 0x42F3, 2, 8);          // EBMLMaxSizeLength
+        put_str(ebml, 0x4282, 2, "webm");      // DocType
+        put_uint(ebml, 0x4287, 2, 4);          // DocTypeVersion
+        put_uint(ebml, 0x4285, 2, 2);          // DocTypeReadVersion
+        put_elem(h, 0x1A45DFA3, 4, ebml);
+
+        std::string seg;
+        std::string info;
+        put_uint(info, 0x2AD7B1, 3, 1000000);  // TimecodeScale
+        put_str(info, 0x4D80, 2, "sdrwebd");
+        put_str(info, 0x5741, 2, "sdrwebd");
+        put_elem(seg, 0x1549A966, 4, info);
+
+        std::string head;
+        head += "OpusHead";
+        put_u8(head, 1);            // version
+        put_u8(head, (uint8_t)ch_);
+        put_be(head, 312, 2);       // pre-skip
+        put_be(head, 48000, 4);     // 采样率
+        put_be(head, 0, 2);         // gain
+        put_u8(head, 0);            // mapping family
+
+        std::string audio;
+        put_float(audio, 0xB5, 1, 48000.0);
+        put_uint(audio, 0x9F, 1, (uint64_t)ch_);
+
+        std::string track;
+        put_uint(track, 0xD7, 1, 1);        // TrackNumber
+        put_uint(track, 0x73C5, 2, 1);      // TrackUID
+        put_uint(track, 0x83, 1, 2);        // TrackType = audio
+        put_str(track, 0x86, 1, "A_OPUS");  // CodecID
+        put_elem(track, 0x63A2, 2, head);   // CodecPrivate
+        put_elem(track, 0xE1, 1, audio);    // Audio
+        std::string tracks;
+        put_elem(tracks, 0xAE, 1, track);
+        put_elem(seg, 0x1654AE6B, 4, tracks);
+
+        put_id(h, 0x18538067, 4);           // Segment，未知长度
+        h.push_back((char)0x01);
+        for (int i = 0; i < 7; i++) h.push_back((char)0xFF);
+        h += seg;
+        sink_(h.data(), h.size());
+    }
+
+    void add_block(const unsigned char* pkt, size_t n) {
+        std::string blk;
+        put_u8(blk, 0x81);                  // track number vint (1)
+        put_be(blk, 0, 2);                  // 相对 cluster 的时间码
+        put_u8(blk, 0x80);                  // keyframe
+        blk.append((const char*)pkt, n);
+
+        std::string cl;
+        put_uint(cl, 0xE7, 1, time_ms_);    // Timecode
+        put_elem(cl, 0xA3, 1, blk);         // SimpleBlock
+        std::string cluster;
+        put_elem(cluster, 0x1F43B675, 4, cl);
+        sink_(cluster.data(), cluster.size());
+    }
+
+    void resample(const int16_t* in, size_t n) {
+        const double step = in_rate_ / 48000.0;
+        for (size_t i = 0; i < n; i++) {
+            double pos = phase_;
+            while (pos < 1.0) {
+                for (int c = 0; c < ch_; c++) {
+                    double a = last_[c], b = in[i * ch_ + c];
+                    double v = a + (b - a) * pos;
+                    buf48_.push_back((opus_int16)std::max(-32768.0, std::min(32767.0, v)));
+                }
+                pos += step;
+            }
+            phase_ = pos - 1.0;
+            for (int c = 0; c < ch_; c++) last_[c] = in[i * ch_ + c];
+        }
+    }
+
     std::function<void(const char*, size_t)> sink_;
-    pid_t pid_ = -1;
-    int in_ = -1, out_ = -1;
-    std::atomic<bool> closed_{false};
-    std::thread reader_;
+    OpusEncoder* enc_ = nullptr;
+    double in_rate_ = 48000;
+    int ch_ = 1;
+    double phase_ = 0.0;
+    double last_[2] = {0, 0};
+    std::vector<opus_int16> buf48_;
+    uint64_t time_ms_ = 0;
 };
 
-
-static std::atomic<double> g_opus_bytes{0};
-static std::atomic<int> g_enc_count{0};
 static std::mutex g_enc_mtx;
 static std::map<int, std::shared_ptr<OpusEnc>> g_encs;
 
@@ -1443,7 +1546,7 @@ static void handle_cmd(int fd, const json& m) {
                         g_opus_bytes.store(g_opus_bytes.load() + (double)n);
                         ws_frame(fd, 0x2, f.data(), f.size());
                     });
-                    if (enc->start(g_sdr->audio_rate())) g_enc_count++;
+                    if (enc->start(g_sdr->audio_rate(), 1)) g_enc_count++;
                 }
             } else {
                 if (enc) { enc->close(); enc.reset(); g_enc_count--; }

@@ -142,7 +142,7 @@
       <section class="panel" id="p-src">
         <h3>Source <span class="arr">▾</span></h3>
         <div class="body">
-          <div class="row"><label>设备</label><span style="flex:1">SDRplay RSP1</span></div>
+          <div class="row"><label>设备</label><span style="flex:1" id="devName">--</span></div>
           <div class="row"><label>接口</label><span style="flex:1">SoapySDR</span></div>
           <div class="row"><label>采样率</label>
             <select id="rate">
@@ -645,6 +645,7 @@ function onJson(m) {
     $('kAud').textContent = (m.codec === 'opus' ? 'Opus ' : 'PCM ') + Math.round(m.audio_kbps) + ' kbps';
     $('kCli').textContent = m.clients;
     $('kEnc').textContent = (m.encoder || '--') + (m.channels === 2 ? '·立体声' : '·单声道');
+    if (m.adc_name) $('devName').textContent = m.adc_name;
     if (document.activeElement !== $('stereo')) $('stereo').checked = !!m.stereo;
     $('runBtn').textContent = S.running ? '■' : '▶';
     $('runBtn').classList.toggle('on', S.running);

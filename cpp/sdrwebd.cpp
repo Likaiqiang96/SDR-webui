@@ -600,8 +600,22 @@ void Sdr::read_block() {
 
     if ((int)z_buf_.size() < n) z_buf_.resize(n);
     const float scale = 1.0f / 32768.0f;
-    for (int i = 0; i < n; i++)
-        z_buf_[i] = cfloat(buf_[2 * i] * scale, buf_[2 * i + 1] * scale);
+    int bits;
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        bits = g_p.bits;
+    }
+    if (bits == 8) {
+        // 等效 8-bit ADC（rtl_tcp 8-bit 流）：只保留 256 级，用于和 12-bit 对比
+        for (int i = 0; i < n; i++) {
+            float qr = std::max(-128.0f, std::min(127.0f, (float)lrintf(buf_[2 * i] * scale * 128.0f)));
+            float qi = std::max(-128.0f, std::min(127.0f, (float)lrintf(buf_[2 * i + 1] * scale * 128.0f)));
+            z_buf_[i] = cfloat(qr / 128.0f, qi / 128.0f);
+        }
+    } else {
+        for (int i = 0; i < n; i++)
+            z_buf_[i] = cfloat(buf_[2 * i] * scale, buf_[2 * i + 1] * scale);
+    }
     cfloat* z = z_buf_.data();
 
     iq_bytes_ += (double)n * 4;

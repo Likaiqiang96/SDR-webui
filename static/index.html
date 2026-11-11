@@ -128,6 +128,7 @@
     <button class="iconbtn" id="menuBtn" title="菜单">☰</button>
     <button class="iconbtn" id="runBtn" title="开始/停止">■</button>
     <button class="iconbtn" id="scanBtn" title="自动搜台">🔍</button>
+    <button class="iconbtn" id="fsBtn" title="全屏 (F)">⛶</button>
     <div id="volBox"><span>🔊</span><input type="range" id="vol" min="0" max="100" value="70"></div>
     <input id="freqBox" value="100.000000" spellcheck="false">
     <div id="modeBox">WFM</div>
@@ -159,7 +160,7 @@
               <span id="adcName" style="color:var(--dim);font-size:11px"></span>
             </div></div>
           <div class="hr"></div>
-          <div class="kv"><span>ADC</span><b id="kAdc">12-bit</b></div>
+          <div class="kv"><span>ADC</span><b id="kAdc">—</b></div>
           <div class="kv"><span>IQ 码率</span><b id="kIq">--</b></div>
           <div class="kv"><span>下行</span><b id="kDown">--</b></div>
           <div class="kv"><span>音频</span><b id="kAud">--</b></div>
@@ -442,7 +443,8 @@ function drawSpec() {
   gSpec.clearRect(0, 0, w, h);
   const v = viewSpan(), d0 = S.dbMin, d1 = S.dbMax;
   const span = S.rate / S.zoom;
-  const step = niceStep(span / 8);
+  const divs = Math.max(3, Math.min(12, Math.floor(w / (95 * dpr))));   // 按宽度决定刻度数，避免叠字
+  const step = niceStep(span / divs);
 
   gSpec.font = `${10 * dpr}px sans-serif`;
   gSpec.lineWidth = 1;
@@ -792,6 +794,44 @@ async function startPcm(reason) {
   send({ cmd: 'set', codec: 'pcm' });
   if (!actx) { actx = new AudioContext({ sampleRate: S.audioRate }); await actx.resume(); nextTime = actx.currentTime + 0.1; }
 }
+
+function toggleFullscreen() {
+  const el = document.documentElement;
+  if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (req) {
+      try {
+        const p = req.call(el);
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (e) {}
+    }
+  } else {
+    const ex = document.exitFullscreen || document.webkitExitFullscreen;
+    if (ex) {
+      try {
+        const p = ex.call(document);
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (e) {}
+    }
+  }
+}
+$('fsBtn').onclick = toggleFullscreen;
+function onFsChange() {
+  const on = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  $('fsBtn').textContent = on ? '⤡' : '⛶';
+  $('fsBtn').title = on ? '退出全屏 (F)' : '全屏 (F)';
+  setTimeout(resizeAll, 60);
+}
+document.addEventListener('fullscreenchange', onFsChange);
+document.addEventListener('webkitfullscreenchange', onFsChange);
+document.addEventListener('keydown', e => {
+  if (e.key !== 'f' && e.key !== 'F') return;
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  e.preventDefault();
+  toggleFullscreen();
+});
 
 $('autotune').onclick = () => {
   const b = $('autotune');

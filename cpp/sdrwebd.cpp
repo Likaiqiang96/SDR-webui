@@ -1905,11 +1905,23 @@ int main(int argc, char** argv) {
                         else if (op == 0x9) ws_frame(fd, 0xA, payload.data(), payload.size());
                     }
                     if (c->closing) {
+                        {
+                            std::lock_guard<std::mutex> lk(g_enc_mtx);
+                            auto it = g_encs.find(fd);
+                            if (it != g_encs.end()) { it->second->close(); g_encs.erase(it); g_enc_count--; }
+                        }
                         epoll_ctl(ep, EPOLL_CTL_DEL, fd, nullptr);
                         close(fd);
-                        std::lock_guard<std::mutex> lk(g_conn_mtx);
-                        g_conns.erase(fd);
+                        {
+                            std::lock_guard<std::mutex> lk(g_conn_mtx);
+                            g_conns.erase(fd);
+                        }
                         g_clients--;
+                        logf_("浏览器断开 (%d)", (int)g_clients);
+                        if (g_clients <= 0) {
+                            std::lock_guard<std::mutex> lk(g_mtx);
+                            g_p.paused = true;
+                        }
                     }
                 } else {
                     c->in.append(buf, (size_t)r);

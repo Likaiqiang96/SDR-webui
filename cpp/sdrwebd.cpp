@@ -331,17 +331,37 @@ class OpusEnc {
     }
 
     void write(const int16_t* pcm, size_t frames) {
-        if (!enc_) return;
-        resample(pcm, frames);
-        size_t off = 0;
-        while (buf48_.size() - off >= 480) {
-            unsigned char pkt[4000];
-            int n = opus_encode(enc_, &buf48_[off], 480, pkt, sizeof(pkt));
-            if (n > 1) {
-                add_block(pkt, (size_t)n);
-                g_opus_bytes.store(g_opus_bytes.load() + (double)n);
+        if (!enc_ || frames == 0) return;
+        // 重采样：以输入样本为单位维护小数位置，输出点之间步进 step
+        w_.resize((frames + 1) * ch_);
+        for (int c = 0; c < ch_; c++) w_[c] = prev_[c];
+        memcpy(&w_[ch_], pcm, frames * ch_ * sizeof(int16_t));
+        const size_t n = frames + 1;
+        const double step = in_rate_ / 48000.0;
+        while (pos_ + 1.0 < (double)n) {
+            size_t i = (size_t)pos_;
+            float f = (float)(pos_ - (double)i);
+            for (int c = 0; c < ch_; c++) {
+                float a = (float)w_[i * ch_ + c], b = (float)w_[(i + 1) * ch_ + c];
+                buf48_.push_back((opus_int16)std::max(-32768.0f, std::min(32767.0f, a + (b - a) * f)));
             }
-            off += 480;
+            pos_ += step;
+        }
+        pos_ -= (double)frames;
+        for (int c = 0; c < ch_; c++) prev_[c] = pcm[(frames - 1) * ch_ + c];
+
+        // 480 帧 × 声道数 = 交错样本数（之前按 480 个样本切，立体声时只有一半长度）
+        const size_t FRAME = 480;
+        const size_t STEP = FRAME * (size_t)ch_;
+        size_t off = 0;
+        while (buf48_.size() - off >= STEP) {
+            unsigned char pkt[4000];
+            int n2 = opus_encode(enc_, &buf48_[off], (int)FRAME, pkt, sizeof(pkt));
+            if (n2 > 1) {
+                add_block(pkt, (size_t)n2);
+                g_opus_bytes.store(g_opus_bytes.load() + (double)n2);
+            }
+            off += STEP;
             time_ms_ += 10;
         }
         buf48_.erase(buf48_.begin(), buf48_.begin() + off);
@@ -417,29 +437,13 @@ class OpusEnc {
         sink_(cluster.data(), cluster.size());
     }
 
-    void resample(const int16_t* in, size_t n) {
-        const double step = in_rate_ / 48000.0;
-        for (size_t i = 0; i < n; i++) {
-            double pos = phase_;
-            while (pos < 1.0) {
-                for (int c = 0; c < ch_; c++) {
-                    double a = last_[c], b = in[i * ch_ + c];
-                    double v = a + (b - a) * pos;
-                    buf48_.push_back((opus_int16)std::max(-32768.0, std::min(32767.0, v)));
-                }
-                pos += step;
-            }
-            phase_ = pos - 1.0;
-            for (int c = 0; c < ch_; c++) last_[c] = in[i * ch_ + c];
-        }
-    }
-
     std::function<void(const char*, size_t)> sink_;
     OpusEncoder* enc_ = nullptr;
     double in_rate_ = 48000;
     int ch_ = 1;
-    double phase_ = 0.0;
-    double last_[2] = {0, 0};
+    double pos_ = 0.0;
+    int16_t prev_[2] = {0, 0};
+    std::vector<int16_t> w_;
     std::vector<opus_int16> buf48_;
     uint64_t time_ms_ = 0;
 };
@@ -515,6 +519,7 @@ class Sdr {
     void request_scan() { scan_req_ = true; }
     void request_autotune() { autotune_req_ = true; }
     double audio_rate() { return audio_rate_; }
+    double audio_rate_out() { return audio_rate_out_; }
     int out_channels() { return out_ch_; }
 
   private:
@@ -603,7 +608,7 @@ Sdr::~Sdr() {
 
 void Sdr::setup_filters() {
     std::vector<float> h;
-    design_lowpass(h, 65, 0.8 / dec2_);
+    design_lowpass(h, 65, 0.42 / dec2_);
     dec_fir_.init(h);
     double cutoff = std::min(15000.0, audio_rate_ * 0.45);
     design_lowpass(h, 129, cutoff / (audio_rate_ / 2));
@@ -1364,6 +1369,14 @@ void Sdr::run() {
             Params pp;
             { std::lock_guard<std::mutex> lk(g_mtx); pp = g_p; }
             reset_dsp(pp.rate, pp.mode, pp.stereo);
+            // 音频速率/声道数变了：丢掉旧编码器，通知前端重建 MSE
+            {
+                std::lock_guard<std::mutex> lk(g_enc_mtx);
+                for (auto& kv : g_encs) kv.second->close();
+                g_encs.clear();
+            }
+            broadcast_text(json{{"type", "audio_reset"}}.dump());
+            logf_("音频参数变化 -> %.0f Hz / %d ch，已通知客户端重置", audio_rate_out_, out_ch_);
         }
         if (!ensure_dev()) { usleep(500000); continue; }
 
@@ -1639,7 +1652,7 @@ static void handle_cmd(int fd, const json& m) {
             auto& enc = g_encs[fd];
             if (codec == "opus") {
                 if (!enc) {
-                    logf_("启动 Opus 编码器（%.0f Hz, %d ch）", g_sdr->audio_rate(), g_sdr->out_channels());
+                    logf_("启动 Opus 编码器（%.0f Hz, %d ch）", g_sdr->audio_rate_out(), g_sdr->out_channels());
                     enc = std::make_shared<OpusEnc>([fd](const char* d, size_t n) {
                         std::string f;
                         f.push_back('O');
@@ -1650,7 +1663,7 @@ static void handle_cmd(int fd, const json& m) {
                         g_opus_bytes.store(g_opus_bytes.load() + (double)n);
                         ws_frame(fd, 0x2, f.data(), f.size());
                     });
-                    if (enc->start(g_sdr->audio_rate(), g_sdr->out_channels())) g_enc_count++;
+                    if (enc->start(g_sdr->audio_rate_out(), g_sdr->out_channels())) g_enc_count++;
                 }
             } else {
                 if (enc) { enc->close(); enc.reset(); g_enc_count--; }

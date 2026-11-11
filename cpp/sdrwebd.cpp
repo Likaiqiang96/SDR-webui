@@ -1043,6 +1043,8 @@ struct Conn {
     bool is_ws = false;
     bool closing = false;
     std::string codec = "pcm";
+    double last_rx = 0;
+    double last_ping = 0;
 };
 
 
@@ -1323,7 +1325,11 @@ static void ws_handshake(int fd, const std::string& req) {
     {
         std::lock_guard<std::mutex> lk(g_conn_mtx);
         auto it = g_conns.find(fd);
-        if (it != g_conns.end()) it->second->is_ws = true;
+        if (it != g_conns.end()) {
+            it->second->is_ws = true;
+            it->second->last_rx = now_s();
+            it->second->last_ping = now_s();
+        }
     }
     g_clients++;
     g_sdr->push_status();
@@ -1426,8 +1432,48 @@ int main(int argc, char** argv) {
     logf_("看板启动: http://0.0.0.0:%d/", g_port);
 
     epoll_event events[64];
+    double last_beat = now_s();
     while (g_run) {
         int n = epoll_wait(ep, events, 64, 200);
+        if (now_s() - last_beat > 5.0) {
+            last_beat = now_s();
+            std::vector<int> dead;
+            std::vector<int> ping;
+            {
+                std::lock_guard<std::mutex> lk(g_conn_mtx);
+                for (auto& kv : g_conns) {
+                    if (!kv.second->is_ws) continue;
+                    if (now_s() - kv.second->last_rx > 60.0) dead.push_back(kv.first);
+                    else if (now_s() - kv.second->last_ping > 20.0) ping.push_back(kv.first);
+                }
+            }
+            for (int fd2 : ping) {
+                ws_frame(fd2, 0x9, nullptr, 0);
+                std::lock_guard<std::mutex> lk(g_conn_mtx);
+                auto it = g_conns.find(fd2);
+                if (it != g_conns.end()) it->second->last_ping = now_s();
+            }
+            for (int fd2 : dead) {
+                logf_("心跳超时，断开一个客户端");
+                {
+                    std::lock_guard<std::mutex> lk(g_enc_mtx);
+                    auto it = g_encs.find(fd2);
+                    if (it != g_encs.end()) { it->second->close(); g_encs.erase(it); g_enc_count--; }
+                }
+                epoll_ctl(ep, EPOLL_CTL_DEL, fd2, nullptr);
+                close(fd2);
+                std::lock_guard<std::mutex> lk(g_conn_mtx);
+                g_conns.erase(fd2);
+            }
+            if (!dead.empty()) {
+                g_clients -= (int)dead.size();
+                logf_("浏览器断开 (%d)", (int)g_clients);
+                if (g_clients <= 0) {
+                    std::lock_guard<std::mutex> lk(g_mtx);
+                    g_p.paused = true;
+                }
+            }
+        }
         for (int i = 0; i < n; i++) {
             int fd = events[i].data.fd;
             if (fd == lfd) {
@@ -1482,6 +1528,7 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 if (c->is_ws) {
+                    c->last_rx = now_s();
                     c->ws.buf.append(buf, (size_t)r);
                     std::string payload;
                     int op;

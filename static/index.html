@@ -196,7 +196,6 @@
           <div class="row"><label>静噪</label><input type="range" id="sq" min="-100" max="-10" value="-100"><span class="val" id="sqTxt">关闭</span></div>
           <div class="row"><label>去加重</label><select id="deemp"><option>50us</option><option>75us</option><option>关闭</option></select></div>
           <div class="row"><label>立体声</label><input type="checkbox" id="stereo" checked style="flex:none"></div>
-          <div class="row"><label>偏置供电</label><input type="checkbox" id="biastee" style="flex:none"><span style="opacity:.55;font-size:11px;margin-left:6px">RTL-SDR</span></div>
           <div class="row"><label>自动调优</label><button id="autotune" style="flex:1">🎯 优化当前信号</button></div>
           <div class="row"><label>收听</label><button id="listen" style="flex:1" class="primary">▶ 开始收听</button></div>
           <div id="audStat" class="hint">音频：未开始</div>
@@ -648,7 +647,6 @@ function onJson(m) {
     $('kEnc').textContent = (m.encoder || '--') + (m.channels === 2 ? '·立体声' : '·单声道');
     if (m.adc_name) $('devName').textContent = m.adc_name;
     if (document.activeElement !== $('stereo')) $('stereo').checked = !!m.stereo;
-    if (document.activeElement !== $('biastee')) $('biastee').checked = !!m.biastee;
     $('runBtn').textContent = S.running ? '■' : '▶';
     $('runBtn').classList.toggle('on', S.running);
     $('snrTxt').textContent = (m.snr || 0).toFixed(0) + ' dB';

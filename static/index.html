@@ -601,7 +601,9 @@ function connect() {
       if (S.frames === 1) updateDbRange();
       drawSpec(); drawWaterfall(); drawBandplan();
     } else if (type === 'A') {
-      feedAudio(new Int16Array(ev.data, 4, n));
+      feedAudio(new Int16Array(ev.data, 4, n), 1);
+    } else if (type === 'B') {
+      feedAudio(new Int16Array(ev.data, 4, n), 2);
     } else if (type === 'O') {
       feedOpus(ev.data.slice(4, 4 + n));
     }
@@ -614,6 +616,7 @@ function onJson(m) {
     S.freq = m.freq; S.offset = m.offset || 0; S.rate = m.rate; S.mode = m.mode;
     S.bits = m.bits; S.bw = m.bw; S.squelch = m.squelch; S.gain = m.gain; S.running = m.running;
     if (m.audio_rate) S.audioRate = m.audio_rate;
+    S.stereo = !!m.stereo && (m.channels === 2);
     // 首次收到状态时，把残留的小偏移对齐到当前调谐步进
     if (!S._gridInit) {
       S._gridInit = true;
@@ -744,15 +747,27 @@ setInterval(() => {
   if (srcBuf && !srcBuf.updating && audioEl.currentTime - b.start(0) > 4) {
     try { srcBuf.remove(b.start(0), audioEl.currentTime - 2); } catch (e) {}
   }
-  if (S.listening && !pcmMode) $('audStat').textContent = 'Opus 播放中 · 延迟 ' + lag.toFixed(2) + 's';
+  if (S.listening && !pcmMode) {
+    const ch = S.stereo ? '立体声' : '单声道';
+    $('audStat').textContent = 'Opus·' + ch + ' · 延迟 ' + lag.toFixed(2) + 's';
+  }
 }, 600);
 
-function feedAudio(pcm) {
+function feedAudio(pcm, channels) {
   if (!S.listening || !actx) return;
-  const buf = actx.createBuffer(1, pcm.length, S.audioRate);
-  const ch = buf.getChannelData(0);
+  const frames = pcm.length / (channels || 1);
+  const buf = actx.createBuffer(channels || 1, frames, S.audioRate);
   const g = Number($('vol').value) / 100;
-  for (let i = 0; i < pcm.length; i++) ch[i] = (pcm[i] / 32768) * g;
+  if (channels === 2) {
+    const l = buf.getChannelData(0), r = buf.getChannelData(1);
+    for (let i = 0; i < frames; i++) {
+      l[i] = (pcm[2 * i] / 32768) * g;
+      r[i] = (pcm[2 * i + 1] / 32768) * g;
+    }
+  } else {
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < frames; i++) ch[i] = (pcm[i] / 32768) * g;
+  }
   const src = actx.createBufferSource();
   src.buffer = buf; src.connect(actx.destination);
   const t = Math.max(actx.currentTime + 0.05, nextTime);

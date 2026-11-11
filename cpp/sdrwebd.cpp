@@ -664,6 +664,8 @@ class Sdr {
     float dc_coef_ = 0.99f;
     float deemph_a_ = 0, deemph_state_ = 0;
     Fir dec_fir_, audio_fir_, deemph_fir_;
+    Fir chan_i_, chan_q_;          // 解调前的通道低通（抗邻道/混叠）
+    double chan_bw_ = 0;
     bool audio_lp_on_ = false;
     double squelch_hold_ = 0;
     fftwf_plan fft_plan_ = nullptr;
@@ -834,6 +836,14 @@ bool Sdr::ensure_dev() {
         }
         dev_->setSampleRate(SOAPY_SDR_RX, 0, p.rate);
         dev_->setFrequency(SOAPY_SDR_RX, 0, p.freq);
+        // 模拟中频带宽（RSP1 的 IF 滤波器）：窄一点能挡邻道强台
+        try {
+            double bw_if = std::max(200e3, std::min(8e6, p.bw * 1.4));
+            dev_->setBandwidth(SOAPY_SDR_RX, 0, bw_if);
+            logf_("IF 带宽 %.0f kHz", bw_if / 1e3);
+        } catch (std::exception& e) {
+            logf_("设置 IF 带宽不支持: %s", e.what());
+        }
         try { dev_->setGainMode(SOAPY_SDR_RX, 0, false); } catch (...) {}
         dev_->setGain(SOAPY_SDR_RX, 0, 42.0 - p.gain);
         stream_ = dev_->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16);
@@ -1041,6 +1051,23 @@ void Sdr::demod(const cfloat* zin, int n) {
         }
     }
     mix_phase8_ += nd;
+
+    // 解调前的通道滤波：把 ±bw/2 之外的东西滤掉，避免邻道/混叠进来的强台
+    {
+        double want = std::min(p.bw * 0.62, fsd * 0.45);   // 截止频率（Hz）
+        if (std::abs(want - chan_bw_) > 500.0) {
+            std::vector<float> hh;
+            design_lowpass(hh, 63, want / (fsd / 2));
+            chan_i_.init(hh);
+            chan_q_.init(hh);
+            chan_bw_ = want;
+        }
+        for (int i = 0; i < nd; i++) {
+            float r = zr[i], m2 = zi[i];
+            zr[i] = chan_i_.step(r);
+            zi[i] = chan_q_.step(m2);
+        }
+    }
 
     if ((int)a_buf_.size() < nd) a_buf_.resize(nd);
     float* a = a_buf_.data();

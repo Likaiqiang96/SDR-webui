@@ -666,6 +666,23 @@ class Sdr {
     Fir dec_fir_, audio_fir_, deemph_fir_;
     Fir chan_i_, chan_q_;          // 解调前的通道低通（抗邻道/混叠）
     double chan_bw_ = 0;
+    std::string drv_, hw_;
+
+    void set_gain_ui(double ui) {
+        if (!dev_) return;
+        double lo = 0, hi = 42;
+        try {
+            auto r = dev_->getGainRange(SOAPY_SDR_RX, 0);
+            lo = r.minimum(); hi = r.maximum();
+        } catch (...) {}
+        bool inverted = false;
+        { std::string k = drv_ + hw_;
+          for (auto& c : k) c = (char)tolower((unsigned char)c);
+          inverted = (k.find("sdrplay") != std::string::npos || k.find("rsp") != std::string::npos); }
+        double v = inverted ? (hi - ui) : (lo + ui * (hi - lo) / 42.0);
+        v = std::max(lo, std::min(hi, v));
+        try { dev_->setGain(SOAPY_SDR_RX, 0, v); } catch (...) {}
+    }
     bool audio_lp_on_ = false;
     double squelch_hold_ = 0;
     fftwf_plan fft_plan_ = nullptr;
@@ -845,7 +862,7 @@ bool Sdr::ensure_dev() {
             logf_("设置 IF 带宽不支持: %s", e.what());
         }
         try { dev_->setGainMode(SOAPY_SDR_RX, 0, false); } catch (...) {}
-        dev_->setGain(SOAPY_SDR_RX, 0, 42.0 - p.gain);
+        set_gain_ui(p.gain);
         stream_ = dev_->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16);
         if (dev_->activateStream(stream_) != 0) {
             logf_("activateStream 失败");
@@ -857,10 +874,25 @@ bool Sdr::ensure_dev() {
         try {
             std::string drv = dev_->getDriverKey();
             std::string hw = dev_->getHardwareKey();
+            std::string key = drv + " " + hw;
+            for (auto& c : key) c = (char)tolower((unsigned char)c);
             int adc = 12;
-            if (drv == "rtlsdr" || drv == "hackrf" || drv == "osmosdr") adc = 8;
-            else if (drv == "sdrplay" || drv == "airspy" || drv == "lime" ||
-                     drv == "bladerf" || drv == "uhd") adc = 12;
+            if (key.find("rtl") != std::string::npos || key.find("hackrf") != std::string::npos ||
+                key.find("fc0013") != std::string::npos || key.find("r820t") != std::string::npos ||
+                key.find("e4000") != std::string::npos)
+                adc = 8;                                  // RTL-SDR 系列：8bit
+            else if (key.find("sdrplay") != std::string::npos || key.find("rsp") != std::string::npos ||
+                     key.find("airspy") != std::string::npos || key.find("lime") != std::string::npos ||
+                     key.find("bladerf") != std::string::npos)
+                adc = 12;
+            else {
+                try {                                     // 兜底：看原生流格式
+                    double fscale = 0;
+                    std::string fmt = dev_->getNativeStreamFormat(SOAPY_SDR_RX, 0, fscale);
+                    adc = (fmt == SOAPY_SDR_CS8 || fmt == SOAPY_SDR_CU8) ? 8 : 12;
+                } catch (...) { adc = 12; }
+            }
+            drv_ = drv; hw_ = hw;
             g_adc_bits = adc;
             {
                 std::lock_guard<std::mutex> lk(g_adc_mtx);
@@ -1273,7 +1305,7 @@ void Sdr::do_autotune() {
     struct Cand { double gain, snr, clip, score; };
     std::vector<Cand> cands;
     for (double g = 0; g <= 42; g += 6) {
-        dev_->setGain(SOAPY_SDR_RX, 0, 42.0 - g);
+        set_gain_ui(g);
         usleep(350000);
         double snr = -99, clip = 0;
         for (int rep = 0; rep < 2; rep++) {   // 测两次取最好，抵消信号衰落
@@ -1290,7 +1322,7 @@ void Sdr::do_autotune() {
     double best = cands.front().gain;
     for (double g : {best - 3, best + 3}) {
         if (g < 0 || g > 42) continue;
-        dev_->setGain(SOAPY_SDR_RX, 0, 42.0 - g);
+        set_gain_ui(g);
         usleep(350000);
         double snr = -99, clip = 0;
         measure(snr, clip);
@@ -1518,7 +1550,7 @@ void Sdr::run() {
             try {
                 dev_->setFrequency(SOAPY_SDR_RX, 0, p.freq);
                 try { dev_->setGainMode(SOAPY_SDR_RX, 0, false); } catch (...) {}
-        dev_->setGain(SOAPY_SDR_RX, 0, 42.0 - p.gain);
+        set_gain_ui(p.gain);
             } catch (...) {}
         }
         if (autotune_req_.exchange(false)) {

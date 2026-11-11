@@ -308,9 +308,10 @@ class SDR(threading.Thread):
             hw = dev.getHardwareKey()
         except Exception:
             drv, hw = '', ''
-        if drv in ('rtlsdr', 'hackrf', 'osmosdr'):
+        key = ('%s %s' % (drv, hw)).lower()
+        if any(k in key for k in ('rtl', 'hackrf', 'fc0013', 'r820t', 'e4000')):
             self.adc_bits = 8
-        elif drv in ('sdrplay', 'airspy', 'lime', 'bladerf', 'uhd'):
+        elif any(k in key for k in ('sdrplay', 'rsp', 'airspy', 'lime', 'bladerf')):
             self.adc_bits = 12
         else:
             self.adc_bits = 12 if drv else 0

@@ -406,6 +406,7 @@ class Sdr {
     json params_json();
     void push_status();
     void request_scan() { scan_req_ = true; }
+    void request_autotune() { autotune_req_ = true; }
     double audio_rate() { return audio_rate_; }
 
   private:
@@ -423,6 +424,8 @@ class Sdr {
     std::vector<int16_t> buf_;
     std::atomic<bool> scan_req_{false};
     std::atomic<bool> rate_dirty_{false};
+    std::atomic<bool> autotune_req_{false};
+    void do_autotune();
     bool scanning_ = false;
 
     static const int READ_N = 16384;
@@ -867,6 +870,119 @@ void Sdr::demod(const cfloat* zin, int n) {
     }
 }
 
+void Sdr::do_autotune() {
+    Params p;
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        p = g_p;
+    }
+    const int nfft = 4096;
+    std::vector<cfloat> fin(nfft), fout(nfft);
+    std::vector<float> win(nfft);
+    for (int i = 0; i < nfft; i++) win[i] = 0.5f - 0.5f * cosf(2 * M_PI * i / (nfft - 1));
+    fftwf_plan plan = fftwf_plan_dft_1d(nfft, (fftwf_complex*)fin.data(),
+                                        (fftwf_complex*)fout.data(), FFTW_FORWARD, FFTW_ESTIMATE);
+    const double rate = p.rate;
+    const double bin_hz = rate / nfft;
+
+    auto measure = [&](double& snr_out, double& clip_out) {
+        void* bufs[1] = {buf_.data()};
+        int flags = 0;
+        long long tns = 0;
+        std::vector<cfloat> acc;
+        acc.reserve(READ_N * 4);
+        long long clipped = 0, total = 0;
+        for (int r = 0; r < 8; r++) {
+            int ret = dev_->readStream(stream_, bufs, READ_N, flags, tns, 200000);
+            if (ret <= 0) continue;
+            for (int i = 0; i < ret; i++) {
+                acc.push_back(cfloat(buf_[2 * i] / 32768.0f, buf_[2 * i + 1] / 32768.0f));
+                if (std::abs(buf_[2 * i]) > 32000 || std::abs(buf_[2 * i + 1]) > 32000) clipped++;
+                total++;
+            }
+        }
+        clip_out = total ? (double)clipped / (double)total : 0.0;
+        if ((int)acc.size() < nfft) { snr_out = -99; return; }
+        // 用最后 nfft 点做一次 FFT，算信道内峰值 vs 带外中位
+        std::vector<float> db(nfft, 0.0f);
+        int nfr = std::min(3, (int)acc.size() / nfft);
+        float norm = 20.0f * log10f((float)nfft / 4.0f);
+        for (int fr = 0; fr < nfr; fr++) {
+            const cfloat* seg = acc.data() + acc.size() - nfft * (fr + 1);
+            for (int i = 0; i < nfft; i++) fin[i] = seg[i] * win[i];
+            fftwf_execute(plan);
+            for (int i = 0; i < nfft; i++) {
+                int idx = (i + nfft / 2) % nfft;
+                cfloat v = fout[idx];
+                db[i] += 10.0f * log10f(v.real() * v.real() + v.imag() * v.imag() + 1e-12f) - norm;
+            }
+        }
+        for (auto& v : db) v /= (float)std::max(1, nfr);
+        double half = std::min(p.bw / 2.0, rate * 0.4);
+        std::vector<float> inb, outb;
+        for (int i = 0; i < nfft; i++) {
+            double f = (i - nfft / 2) * bin_hz;
+            if (std::abs(f) <= half) inb.push_back(db[i]);
+            else if (std::abs(f) < rate * 0.45) outb.push_back(db[i]);
+        }
+        if (inb.size() < 8 || outb.size() < 8) { snr_out = -99; return; }
+        std::sort(inb.begin(), inb.end());
+        std::sort(outb.begin(), outb.end());
+        float pk = inb[inb.size() * 9 / 10];
+        float med_out = outb[outb.size() / 2];
+        snr_out = pk - med_out;
+    };
+
+    logf_("自动调优开始（当前增益 %.0f dB）", p.gain);
+    broadcast_text(json{{"type", "autotune_started"}}.dump());
+
+    struct Cand { double gain, snr, clip, score; };
+    std::vector<Cand> cands;
+    for (double g = 0; g <= 42; g += 6) {
+        dev_->setGain(SOAPY_SDR_RX, 0, 42.0 - g);
+        usleep(350000);
+        double snr = -99, clip = 0;
+        for (int rep = 0; rep < 2; rep++) {   // 测两次取最好，抵消信号衰落
+            double s2 = -99, c2 = 0;
+            measure(s2, c2);
+            if (s2 > snr) { snr = s2; clip = c2; }
+        }
+        double score = snr - 200.0 * clip;   // 削顶重罚
+        cands.push_back({g, snr, clip, score});
+        logf_("  增益 %2.0f dB: SNR %.1f dB, 削顶 %.2f%%, 评分 %.1f", g, snr, clip * 100, score);
+    }
+    // 先挑削顶可接受的最优，再在 ±3 dB 内细化
+    std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.score > b.score; });
+    double best = cands.front().gain;
+    for (double g : {best - 3, best + 3}) {
+        if (g < 0 || g > 42) continue;
+        dev_->setGain(SOAPY_SDR_RX, 0, 42.0 - g);
+        usleep(350000);
+        double snr = -99, clip = 0;
+        measure(snr, clip);
+        double score = snr - 200.0 * clip;
+        cands.push_back({g, snr, clip, score});
+        logf_("  细化 %.0f dB: SNR %.1f dB, 削顶 %.2f%%", g, snr, clip * 100);
+    }
+    std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.score > b.score; });
+    Cand best_c = cands.front();
+    // 同分（0.3 dB 内）时取增益更低的，留过载余量
+    for (auto& c : cands)
+        if (c.score >= best_c.score - 0.3 && c.gain < best_c.gain) best_c = c;
+    dev_->setGain(SOAPY_SDR_RX, 0, 42.0 - best_c.gain);
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        g_p.gain = best_c.gain;
+    }
+    g_dirty = true;
+    fftwf_destroy_plan(plan);
+    logf_("自动调优完成：增益 %.0f dB（SNR %.1f dB）", best_c.gain, best_c.snr);
+    broadcast_text(json{{"type", "autotune"},
+                        {"gain", best_c.gain},
+                        {"snr", std::round(best_c.snr * 10) / 10},
+                        {"clip", std::round(best_c.clip * 10000) / 100}}.dump());
+}
+
 void Sdr::push_status() {
     Params p;
     {
@@ -1058,6 +1174,10 @@ void Sdr::run() {
                 try { dev_->setGainMode(SOAPY_SDR_RX, 0, false); } catch (...) {}
         dev_->setGain(SOAPY_SDR_RX, 0, 42.0 - p.gain);
             } catch (...) {}
+        }
+        if (autotune_req_.exchange(false)) {
+            try { do_autotune(); } catch (std::exception& e) { logf_("自动调优异常: %s", e.what()); }
+            continue;
         }
         if (scan_req_.exchange(false)) {
             try { do_scan(); } catch (std::exception& e) { logf_("扫描异常: %s", e.what()); scanning_ = false; }
@@ -1326,6 +1446,13 @@ static void handle_cmd(int fd, const json& m) {
         g_sdr->apply(kw);
         json pj = g_sdr->params_json();
         broadcast_text(json{{"type", "params"}, {"params", pj}}.dump());
+    } else if (cmd == "autotune") {
+        {
+            std::lock_guard<std::mutex> lk(g_mtx);
+            g_p.paused = false;
+        }
+        g_dirty = true;
+        g_sdr->request_autotune();
     } else if (cmd == "scan") {
         {
             std::lock_guard<std::mutex> lk(g_mtx);

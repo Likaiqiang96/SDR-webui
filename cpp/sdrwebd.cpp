@@ -82,6 +82,8 @@ struct Params {
     std::string mode = "WFM";
     int bits = 12;
     bool paused = true;
+    bool denoise = false;      // 音频降噪
+    double denoise_amt = 1.0;  // 降噪强度 0..1
 };
 
 static std::mutex g_mtx;
@@ -517,6 +519,7 @@ json Sdr::params_json() {
     std::lock_guard<std::mutex> lk(g_mtx);
     return json{{"freq", g_p.freq}, {"rate", g_p.rate}, {"offset", g_p.offset},
                 {"bw", g_p.bw}, {"squelch", g_p.squelch}, {"gain", g_p.gain},
+                {"denoise", g_p.denoise}, {"denoise_amt", g_p.denoise_amt},
                 {"mode", g_p.mode}, {"bits", g_p.bits}, {"paused", g_p.paused}};
 }
 
@@ -542,6 +545,8 @@ void Sdr::apply(const json& kw) {
         if (kw.contains("mode") && kw["mode"].is_string()) g_p.mode = kw["mode"].get<std::string>();
         if (kw.contains("bits") && kw["bits"].is_number()) g_p.bits = kw["bits"].get<int>();
         if (kw.contains("paused") && kw["paused"].is_boolean()) g_p.paused = kw["paused"].get<bool>();
+        if (kw.contains("denoise") && kw["denoise"].is_boolean()) g_p.denoise = kw["denoise"].get<bool>();
+        if (kw.contains("denoise_amt") && kw["denoise_amt"].is_number()) g_p.denoise_amt = kw["denoise_amt"].get<double>();
     }
     if (rate_changed) rate_dirty_ = true;
     g_dirty = true;
@@ -996,7 +1001,8 @@ void Sdr::push_status() {
            {"iq_mbps", (double)g_iq_mbps}, {"down_kbps", (double)g_down_kbps},
            {"audio_kbps", (double)g_audio_kbps}, {"codec", "opus"},
            {"clients", (int)g_clients}, {"snr", (double)g_snr},
-           {"audio_rate", audio_rate_}, {"error", g_error}};
+           {"audio_rate", audio_rate_}, {"error", g_error},
+           {"denoise", p.denoise}, {"denoise_amt", p.denoise_amt}};
     broadcast_text(j.dump());
 }
 

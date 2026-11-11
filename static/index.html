@@ -806,12 +806,23 @@ $('listen').onclick = async () => {
       try { await audioEl.play(); } catch (e) { $('audStat').textContent = '播放被拒绝：' + e.message; }
       clearTimeout(fallbackTimer);
       fallbackTimer = setTimeout(() => {
-        if (!audioEl.buffered.length || audioEl.readyState < 2) startPcm('Opus 无数据');
+        if (audioEl.buffered.length && audioEl.readyState >= 2) return;
+        // 一次重试：重建 MSE 并重新声明 codec
+        if (!S.retriedMse) {
+          S.retriedMse = true;
+          $('audStat').textContent = '没收到音频，正在重试…';
+          restartMse();
+          fallbackTimer = setTimeout(() => {
+            if (!audioEl.buffered.length || audioEl.readyState < 2) startPcm('Opus 无数据');
+          }, 3500);
+        } else {
+          startPcm('Opus 无数据');
+        }
       }, 4000);
     } else await startPcm('浏览器不支持 MSE');
-    S.listening = true; btn.textContent = '⏸ 停止收听'; btn.classList.remove('primary');
+    S.listening = true; S.retriedMse = false; btn.textContent = '⏸ 停止收听'; btn.classList.remove('primary');
   } else {
-    S.listening = false; S.audioArmed = false; S.opusSync = false; pcmMode = false;
+    S.listening = false; S.audioArmed = false; S.opusSync = false; pcmMode = false; S.retriedMse = false;
     clearTimeout(fallbackTimer);
     try { audioEl.pause(); } catch (e) {}
     if (mediaSource) {

@@ -1,5 +1,5 @@
 // sdrwebd.cpp — RSP1 网页看板后端（C++，替换原 Python 版本）
-// 单文件：HTTP + WebSocket + SoapySDR 采集 + FFT 频谱 + 解调 + Opus(ffmpeg 子进程)
+// 单文件：HTTP + WebSocket + SoapySDR 采集 + FFT 频谱 + 解调 + libopus/WebM 编码
 //
 // 用法: ./sdrwebd [--port 8095] [--static DIR] [--bookmarks FILE]
 
@@ -1622,10 +1622,12 @@ static void handle_cmd(int fd, const json& m) {
                 auto it = g_conns.find(fd);
                 if (it != g_conns.end()) it->second->codec = codec;
             }
+            logf_("客户端 %d 切换 codec -> %s", fd, codec.c_str());
             std::lock_guard<std::mutex> lk(g_enc_mtx);
             auto& enc = g_encs[fd];
             if (codec == "opus") {
                 if (!enc) {
+                    logf_("启动 Opus 编码器（%.0f Hz, %d ch）", g_sdr->audio_rate(), g_sdr->out_channels());
                     enc = std::make_shared<OpusEnc>([fd](const char* d, size_t n) {
                         std::string f;
                         f.push_back('O');

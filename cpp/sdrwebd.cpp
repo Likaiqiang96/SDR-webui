@@ -547,8 +547,25 @@ void Sdr::apply(const json& kw) {
 bool Sdr::ensure_dev() {
     if (dev_) return true;
     try {
-        SoapySDR::Kwargs args{{"driver", "sdrplay"}};
-        dev_ = SoapySDR::Device::make(args);
+        // 设备选择：优先 SDRplay，其次其他（RTL-SDR / Airspy / HackRF ...）
+        const char* order[] = {"sdrplay", "airspy", "rtlsdr", "hackrf", "lime", "bladerf", nullptr};
+        for (int i = 0; order[i] && !dev_; i++) {
+            try {
+                SoapySDR::Kwargs args{{"driver", order[i]}};
+                dev_ = SoapySDR::Device::make(args);
+            } catch (...) { dev_ = nullptr; }
+        }
+        if (!dev_) {
+            // 兜底：枚举任意可用设备，但跳过 miri/remote/audio 这些不能跑 CS16 的驱动
+            try {
+                for (auto& kw : SoapySDR::Device::enumerate()) {
+                    std::string drv = kw.count("driver") ? kw["driver"] : "";
+                    if (drv == "miri" || drv == "remote" || drv == "audio" || drv == "uhd") continue;
+                    try { dev_ = SoapySDR::Device::make(kw); } catch (...) { dev_ = nullptr; }
+                    if (dev_) break;
+                }
+            } catch (...) {}
+        }
         if (!dev_) return false;
         Params p;
         {

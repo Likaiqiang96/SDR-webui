@@ -313,12 +313,19 @@ static void put_str(std::string& o, uint32_t id, int idlen, const std::string& v
     put_elem(o, id, idlen, v);
 }
 
-class OpusEnc {
-  public:
-    OpusEnc(const std::function<void(const char*, size_t)>& sink) : sink_(sink) {}
-    ~OpusEnc() { close(); }
+struct Encoder {
+    virtual ~Encoder() {}
+    virtual bool start(double rate, int channels) = 0;
+    virtual void write(const int16_t* pcm, size_t frames) = 0;
+    virtual void close() = 0;
+};
 
-    bool start(double rate, int channels = 1) {
+class NativeEnc : public Encoder {
+  public:
+    NativeEnc(const std::function<void(const char*, size_t)>& sink) : sink_(sink) {}
+    ~NativeEnc() { close(); }
+
+    bool start(double rate, int channels = 1) override {
         in_rate_ = rate;
         ch_ = channels;
         int err = 0;
@@ -330,7 +337,7 @@ class OpusEnc {
         return true;
     }
 
-    void write(const int16_t* pcm, size_t frames) {
+    void write(const int16_t* pcm, size_t frames) override {
         if (!enc_ || frames == 0) return;
         // 重采样：以输入样本为单位维护小数位置，输出点之间步进 step
         w_.resize((frames + 1) * ch_);
@@ -367,7 +374,7 @@ class OpusEnc {
         buf48_.erase(buf48_.begin(), buf48_.begin() + off);
     }
 
-    void close() {
+    void close() override {
         if (enc_) { opus_encoder_destroy(enc_); enc_ = nullptr; }
     }
 
@@ -449,7 +456,99 @@ class OpusEnc {
 };
 
 static std::mutex g_enc_mtx;
-static std::map<int, std::shared_ptr<OpusEnc>> g_encs;
+static std::map<int, std::shared_ptr<Encoder>> g_encs;
+
+// ------------------------------------------------------------------ ffmpeg 子进程编码器（备选）
+class FfmpegEnc : public Encoder {
+  public:
+    FfmpegEnc(const std::function<void(const char*, size_t)>& sink) {
+        st_ = std::make_shared<State>();
+        st_->sink = sink;
+    }
+    ~FfmpegEnc() { close(); }
+
+    bool start(double rate, int channels = 1) override {
+        ch_ = channels;
+        int ip[2], op[2];
+        if (pipe(ip) || pipe(op)) return false;
+        pid_ = fork();
+        if (pid_ == 0) {
+            dup2(ip[0], 0);
+            dup2(op[1], 1);
+            ::close(ip[0]); ::close(ip[1]); ::close(op[0]); ::close(op[1]);
+            std::string ar = std::to_string((int)rate);
+            std::string ac = std::to_string(channels);
+            execlp("ffmpeg", "ffmpeg", "-hide_banner", "-loglevel", "error",
+                   "-f", "s16le", "-ar", ar.c_str(), "-ac", ac.c_str(), "-i", "pipe:0",
+                   "-c:a", "libopus", "-b:a", "64000", "-vbr", "on",
+                   "-application", "audio", "-frame_duration", "10",
+                   "-flush_packets", "1",
+                   "-f", "webm", "pipe:1", (char*)nullptr);
+            _exit(127);
+        }
+        ::close(ip[0]);
+        ::close(op[1]);
+        in_ = ip[1];
+        st_->out = op[0];
+        auto st = st_;
+        reader_ = std::thread([st] {
+            char buf[8192];
+            while (true) {
+                int fd = st->out;
+                if (fd < 0) break;
+                ssize_t n = read(fd, buf, sizeof(buf));
+                if (n <= 0) break;
+                if (st->closed) break;
+                g_opus_bytes.store(g_opus_bytes.load() + (double)n);
+                if (st->sink) st->sink(buf, (size_t)n);
+            }
+        });
+        return true;
+    }
+
+    void write(const int16_t* pcm, size_t frames) override {
+        if (in_ < 0 || st_->closed) return;
+        size_t bytes = frames * (size_t)ch_ * 2;
+        const char* p = (const char*)pcm;
+        while (bytes) {
+            ssize_t w = ::write(in_, p, bytes);
+            if (w <= 0) break;
+            p += w;
+            bytes -= (size_t)w;
+        }
+    }
+
+    void close() override {
+        if (st_->closed.exchange(true)) return;
+        if (in_ >= 0) { ::close(in_); in_ = -1; }
+        if (st_->out >= 0) {
+            ::shutdown(st_->out, SHUT_RDWR);
+            ::close(st_->out);
+            st_->out = -1;
+        }
+        if (pid_ > 0) { ::kill(pid_, SIGKILL); int st2; waitpid(pid_, &st2, WNOHANG); pid_ = -1; }
+        if (reader_.joinable()) reader_.detach();   // 不阻塞调用方（网络线程）
+    }
+
+  private:
+    struct State {
+        int out = -1;
+        std::atomic<bool> closed{false};
+        std::function<void(const char*, size_t)> sink;
+    };
+    std::shared_ptr<State> st_;
+    pid_t pid_ = -1;
+    int in_ = -1, ch_ = 1;
+    std::thread reader_;
+};
+
+static std::string g_encoder_kind = "ffmpeg";   // ffmpeg | native
+
+static std::shared_ptr<Encoder> make_encoder(const std::function<void(const char*, size_t)>& sink) {
+    if (g_encoder_kind == "native") return std::make_shared<NativeEnc>(sink);
+    return std::make_shared<FfmpegEnc>(sink);
+}
+
 
 // ------------------------------------------------------------------ DSP 工具
 static void design_lowpass(std::vector<float>& h, int taps, double cutoff_norm) {
@@ -1205,7 +1304,8 @@ void Sdr::push_status() {
            {"audio_kbps", (double)g_audio_kbps}, {"codec", "opus"},
            {"clients", (int)g_clients}, {"snr", (double)g_snr},
            {"audio_rate", audio_rate_out_}, {"error", g_error},
-           {"stereo", p.stereo}, {"channels", out_ch_}, {"spec_fps", p.spec_fps}};
+           {"stereo", p.stereo}, {"channels", out_ch_}, {"spec_fps", p.spec_fps},
+           {"encoder", g_encoder_kind}};
     broadcast_text(j.dump());
 }
 
@@ -1653,7 +1753,7 @@ static void handle_cmd(int fd, const json& m) {
             if (codec == "opus") {
                 if (!enc) {
                     logf_("启动 Opus 编码器（%.0f Hz, %d ch）", g_sdr->audio_rate_out(), g_sdr->out_channels());
-                    enc = std::make_shared<OpusEnc>([fd](const char* d, size_t n) {
+                    enc = make_encoder([fd](const char* d, size_t n) {
                         std::string f;
                         f.push_back('O');
                         f.push_back(0);
@@ -1804,6 +1904,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--port" && i + 1 < argc) g_port = atoi(argv[++i]);
+        else if (a == "--encoder" && i + 1 < argc) g_encoder_kind = argv[++i];
         else if (a == "--static" && i + 1 < argc) g_static = argv[++i];
         else if (a == "--bookmarks" && i + 1 < argc) g_bookmark_file = argv[++i];
     }
@@ -1821,7 +1922,7 @@ int main(int argc, char** argv) {
     ev.data.fd = lfd;
     epoll_ctl(ep, EPOLL_CTL_ADD, lfd, &ev);
 
-    logf_("看板启动: http://0.0.0.0:%d/", g_port);
+    logf_("看板启动: http://0.0.0.0:%d/  (opus 编码器: %s)", g_port, g_encoder_kind.c_str());
 
     epoll_event events[64];
     double last_beat = now_s();

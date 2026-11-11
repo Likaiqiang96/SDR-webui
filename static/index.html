@@ -163,6 +163,7 @@
           <div class="kv"><span>IQ 码率</span><b id="kIq">--</b></div>
           <div class="kv"><span>下行</span><b id="kDown">--</b></div>
           <div class="kv"><span>音频</span><b id="kAud">--</b></div>
+          <div class="kv"><span>Opus 编码</span><b id="kEnc">--</b></div>
           <div class="kv"><span>客户端</span><b id="kCli">--</b></div>
         </div>
       </section>
@@ -194,6 +195,7 @@
           <div class="row"><label>带宽</label><input type="range" id="bw" min="0" max="1000" value="700"><span class="val" id="bwTxt">180 kHz</span></div>
           <div class="row"><label>静噪</label><input type="range" id="sq" min="-100" max="-10" value="-100"><span class="val" id="sqTxt">关闭</span></div>
           <div class="row"><label>去加重</label><select id="deemp"><option>50us</option><option>75us</option><option>关闭</option></select></div>
+          <div class="row"><label>立体声</label><input type="checkbox" id="stereo" checked style="flex:none"></div>
           <div class="row"><label>自动调优</label><button id="autotune" style="flex:1">🎯 优化当前信号</button></div>
           <div class="row"><label>收听</label><button id="listen" style="flex:1" class="primary">▶ 开始收听</button></div>
           <div id="audStat" class="hint">音频：未开始</div>
@@ -642,6 +644,8 @@ function onJson(m) {
     $('kDown').textContent = (m.down_kbps || 0).toFixed(0) + ' KB/s';
     $('kAud').textContent = (m.codec === 'opus' ? 'Opus ' : 'PCM ') + Math.round(m.audio_kbps) + ' kbps';
     $('kCli').textContent = m.clients;
+    $('kEnc').textContent = (m.encoder || '--') + (m.channels === 2 ? '·立体声' : '·单声道');
+    if (document.activeElement !== $('stereo')) $('stereo').checked = !!m.stereo;
     $('runBtn').textContent = S.running ? '■' : '▶';
     $('runBtn').classList.toggle('on', S.running);
     $('snrTxt').textContent = (m.snr || 0).toFixed(0) + ' dB';

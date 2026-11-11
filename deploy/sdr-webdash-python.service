@@ -1,0 +1,17 @@
+[Unit]
+Description=SDR Web Dashboard (Python fallback, port 8095)
+After=network-online.target sdrplay.service
+Requires=sdrplay.service
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=/usr/bin/python3 server.py --port 8095
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

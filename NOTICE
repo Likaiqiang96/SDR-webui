@@ -1,0 +1,10 @@
+本项目的部分资源文件来自 SDR++（https://github.com/AlexandreRouma/SDRPlusPlus），
+SDR++ 以 GNU General Public License v3.0 发布，本项目同样以 GPL-3.0 发布。
+
+  res/bandplans/*.json   波段计划（SDR++ root/res/bandplans）
+  res/colormaps/*.json   瀑布色表（SDR++ root/res/colormaps）
+
+书签文件格式（frequency_manager_config.json）、波段色、调谐步进等交互设计
+参考 SDR++，以便与其配置文件互通。
+
+SDRplay API 与 SoapySDR 不属于本项目，遵循各自的许可。

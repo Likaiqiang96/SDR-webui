@@ -1,0 +1,19 @@
+# 构建产物
+cpp/sdrwebd
+*.o
+*.so
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 运行时数据（每个部署自己生成）
+bookmarks.json
+bookmarks.json.tmp
+*.log
+
+# 编辑器
+.vscode/
+.idea/
+*.swp

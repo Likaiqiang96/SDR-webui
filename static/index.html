@@ -1,0 +1,1205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SDR++ 风格看板 · RSP1</title>
+<style>
+  :root{
+    --bg:#0b0e13; --panel:#151a21; --panel2:#1b222b; --line:#242c37; --fg:#c9d1d9;
+    --dim:#7d8590; --accent:#2f81f7; --ok:#3fb950; --warn:#d29922; --bad:#f85149;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);
+    font:12px/1.4 -apple-system,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;
+    overflow:hidden;position:fixed;inset:0;width:100%}
+  #app{display:flex;flex-direction:column;height:100vh;height:100dvh;
+    padding-bottom:env(safe-area-inset-bottom,0px)}
+
+  /* ---------- 顶栏 ---------- */
+  #top{display:flex;align-items:center;gap:10px;height:52px;padding:0 10px;
+    background:var(--panel);border-bottom:1px solid var(--line);flex:none}
+  .iconbtn{width:34px;height:34px;border:1px solid var(--line);background:#1f2630;color:var(--fg);
+    border-radius:6px;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+  .iconbtn:hover{background:#2a3340}
+  .iconbtn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  #volBox{display:flex;align-items:center;gap:6px;width:140px;flex:none}
+  #volBox input{width:100%;accent-color:var(--accent)}
+  #freqBox{font-size:21px;font-weight:600;letter-spacing:.5px;font-variant-numeric:tabular-nums;
+    background:#0a0d12;border:1px solid var(--line);border-radius:6px;padding:4px 10px;
+    color:#e6edf3;min-width:200px;text-align:center}
+  #freqBox:focus{outline:1px solid var(--accent)}
+  #modeBox{background:#0a0d12;border:1px solid var(--line);border-radius:6px;padding:6px 10px;
+    font-weight:600;color:#e6edf3;min-width:60px;text-align:center}
+  #snrWrap{flex:1;display:flex;align-items:center;gap:8px;min-width:80px}
+  #snrBar{flex:1;height:8px;background:#0a0d12;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+  #snrFill{height:100%;width:0;background:linear-gradient(90deg,#3fb950,#d29922,#f85149)}
+  #snrTxt{width:60px;text-align:right;font-variant-numeric:tabular-nums;color:var(--dim)}
+  #st{width:150px;text-align:right;color:var(--dim);font-variant-numeric:tabular-nums}
+  #clock{width:56px;text-align:right;color:var(--dim);font-variant-numeric:tabular-nums}
+
+  /* ---------- 主体 ---------- */
+  #main{display:flex;flex:1;min-height:0}
+  #side{width:272px;flex:none;background:var(--panel);border-right:1px solid var(--line);
+    overflow-y:auto;overflow-x:hidden;padding-bottom:28px;
+    overscroll-behavior:contain;touch-action:pan-y;-webkit-overflow-scrolling:touch;
+    scrollbar-width:thin;scrollbar-color:#3a4553 transparent}
+  #side::-webkit-scrollbar{width:10px}
+  #side::-webkit-scrollbar-track{background:#0f141a}
+  #side::-webkit-scrollbar-thumb{background:#39424f;border-radius:5px;border:2px solid #0f141a}
+  #side::-webkit-scrollbar-thumb:hover{background:#4d5a6b}
+  #side.hidden{display:none}
+  .panel{border-bottom:1px solid var(--line)}
+  .panel > h3{margin:0;padding:7px 10px;font-size:12px;font-weight:600;color:#e6edf3;
+    background:var(--panel2);cursor:pointer;display:flex;justify-content:space-between;user-select:none}
+  .panel > h3 .arr{color:var(--dim);transition:transform .15s}
+  .panel.closed > h3 .arr{transform:rotate(-90deg)}
+  .panel > .body{padding:8px 10px 10px}
+  .panel.closed > .body{display:none}
+  .row{display:flex;align-items:center;gap:8px;margin:5px 0}
+  .row > label{width:66px;flex:none;color:var(--dim);white-space:nowrap}
+  .row > .val{width:62px;text-align:right;color:var(--fg);font-variant-numeric:tabular-nums}
+  input[type=range]{flex:1;accent-color:var(--accent);min-width:0}
+  select,input[type=text]{flex:1;min-width:0;background:#0a0d12;color:var(--fg);
+    border:1px solid var(--line);border-radius:5px;padding:4px 6px;font-size:12px}
+  button{background:#1f2630;color:var(--fg);border:1px solid var(--line);border-radius:5px;
+    padding:5px 8px;cursor:pointer;font-size:12px}
+  button:hover{background:#2a3340}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .seg{display:flex;gap:4px}
+  .seg button{flex:1;padding:4px 0}
+  .seg button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .kv{display:flex;justify-content:space-between;color:var(--dim);margin:3px 0;font-variant-numeric:tabular-nums}
+  .kv b{color:var(--fg);font-weight:600}
+  .hr{height:1px;background:var(--line);margin:8px 0}
+  #bmList{max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:5px;margin:6px 0}
+  #bmList .bm{padding:4px 7px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:6px}
+  #bmList .bm:last-child{border-bottom:none}
+  #bmList .bm:hover{background:#1f2630}
+  #bmList .bm .f{flex:1;font-variant-numeric:tabular-nums}
+  #bmList .bm .m{color:var(--dim)}
+  #bmList .bm .x{color:var(--dim);padding:0 3px}
+  #bmList .bm .x:hover{color:var(--bad)}
+  .hint{color:var(--dim);font-size:11px;margin-top:6px;line-height:1.45}
+  #err{display:none;padding:5px 10px;background:#3d1418;color:#ffb3b8;font-size:12px}
+
+  /* ---------- 视图 ---------- */
+  #view{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;position:relative}
+  #radioBar{display:flex;align-items:center;gap:6px;padding:4px 6px;flex:none;
+    background:var(--panel2);border-bottom:1px solid var(--line);overflow-x:auto;
+    scrollbar-width:none}
+  #radioBar::-webkit-scrollbar{display:none}
+  #radioBar button{min-width:44px;height:34px;padding:0 10px;font-size:13px;
+    border-radius:7px;touch-action:manipulation;white-space:nowrap}
+  #radioBar button:active{background:var(--accent);border-color:var(--accent);color:#fff}
+  #radioBar .sep{width:1px;height:22px;background:var(--line);margin:0 2px;flex:none}
+  #bandplan{height:16px;width:100%;display:block;background:#0a0d12;flex:none}
+  #specWrap{flex:0 0 44%;min-height:70px;display:flex}
+  #spec{width:100%;height:100%;display:block;background:#05070a;cursor:crosshair;touch-action:none}
+  #splitter{height:12px;flex:none;background:var(--line);cursor:row-resize;
+    border-top:1px solid #0a0d12;border-bottom:1px solid #0a0d12;position:relative;
+    touch-action:none;-webkit-user-select:none;user-select:none}
+  #splitter::before{content:'';position:absolute;left:0;right:0;top:-8px;bottom:-8px}
+  #splitter:hover,#splitter.drag{background:var(--accent)}
+  #waterWrap{flex:1;min-height:70px;display:flex}
+  #water{width:100%;height:100%;display:block;background:#05070a;cursor:crosshair;touch-action:none}
+  #rightBar{position:fixed;right:4px;top:80px;bottom:auto;height:400px;width:34px;display:flex;
+    flex-direction:column;justify-content:space-between;align-items:center;gap:6px;
+    pointer-events:none;z-index:20}
+  #rightBar .rgroup{display:flex;flex-direction:column;align-items:center;gap:3px;
+    pointer-events:auto;flex:1 1 0;min-height:0;width:100%}
+  #rightBar .rlab{font-size:10px;color:var(--dim);user-select:none;flex:none}
+  .vslider{position:relative;flex:1 1 auto;min-height:16px;width:20px;background:#0a0d12;
+    border:1px solid var(--line);border-radius:5px;touch-action:none;cursor:pointer;overflow:hidden}
+  .vslider .vfill{position:absolute;left:0;right:0;bottom:0;background:rgba(47,129,247,.45)}
+  .vslider .vthumb{position:absolute;left:-2px;right:-2px;height:9px;background:var(--accent);
+    border-radius:3px;transform:translateY(50%);box-shadow:0 0 4px rgba(0,0,0,.6)}
+</style>
+</head>
+<body>
+<audio id="audioEl" preload="none"></audio>
+<div id="app">
+  <header id="top">
+    <button class="iconbtn" id="menuBtn" title="菜单">☰</button>
+    <button class="iconbtn" id="runBtn" title="开始/停止">■</button>
+    <button class="iconbtn" id="scanBtn" title="自动搜台">🔍</button>
+    <div id="volBox"><span>🔊</span><input type="range" id="vol" min="0" max="100" value="70"></div>
+    <input id="freqBox" value="100.000000" spellcheck="false">
+    <div id="modeBox">WFM</div>
+    <div id="snrWrap"><div id="snrBar"><div id="snrFill"></div></div><span id="snrTxt">-- dB</span></div>
+    <div id="st">--</div>
+    <div id="clock">--:--</div>
+  </header>
+  <div id="err"></div>
+
+  <div id="main">
+    <aside id="side">
+      <section class="panel" id="p-src">
+        <h3>Source <span class="arr">▾</span></h3>
+        <div class="body">
+          <div class="row"><label>设备</label><span style="flex:1">SDRplay RSP1</span></div>
+          <div class="row"><label>接口</label><span style="flex:1">SoapySDR</span></div>
+          <div class="row"><label>采样率</label>
+            <select id="rate">
+              <option value="1000000">1 MHz</option>
+              <option value="2000000" selected>2 MHz</option>
+              <option value="4000000">4 MHz</option>
+              <option value="6000000">6 MHz</option>
+              <option value="8000000">8 MHz</option>
+            </select></div>
+          <div class="row"><label>增益</label><input type="range" id="gain" min="0" max="42" step="1" value="21"><span class="val" id="gainTxt">21 dB</span></div>
+          <div class="row"><label>位深</label>
+            <div class="seg" style="flex:1"><button id="b12" class="on">12-bit</button><button id="b8">8-bit</button></div></div>
+          <div class="hr"></div>
+          <div class="kv"><span>ADC</span><b id="kAdc">12-bit</b></div>
+          <div class="kv"><span>IQ 码率</span><b id="kIq">--</b></div>
+          <div class="kv"><span>下行</span><b id="kDown">--</b></div>
+          <div class="kv"><span>音频</span><b id="kAud">--</b></div>
+          <div class="kv"><span>客户端</span><b id="kCli">--</b></div>
+        </div>
+      </section>
+
+      <section class="panel" id="p-radio">
+        <h3>Radio <span class="arr">▾</span></h3>
+        <div class="body">
+          <div class="row"><label>模式</label>
+            <select id="mode">
+              <option value="WFM">WFM 宽带调频</option>
+              <option value="NFM">NFM 窄带调频</option>
+              <option value="AM">AM 调幅</option>
+              <option value="USB">USB 上边带</option>
+              <option value="LSB">LSB 下边带</option>
+              <option value="CW">CW 等幅报</option>
+              <option value="DSB">DSB 双边带</option>
+              <option value="RAW">RAW 原始 I</option>
+            </select></div>
+          <div class="row"><label>调谐步进</label>
+            <select id="step">
+              <option value="100000" selected>100 kHz（FM）</option>
+              <option value="50000">50 kHz</option>
+              <option value="25000">25 kHz</option>
+              <option value="12500">12.5 kHz</option>
+              <option value="5000">5 kHz</option>
+              <option value="1000">1 kHz</option>
+              <option value="0">任意（不吸附）</option>
+            </select></div>
+          <div class="row"><label>带宽</label><input type="range" id="bw" min="0" max="1000" value="700"><span class="val" id="bwTxt">180 kHz</span></div>
+          <div class="row"><label>静噪</label><input type="range" id="sq" min="-100" max="-10" value="-100"><span class="val" id="sqTxt">关闭</span></div>
+          <div class="row"><label>去加重</label><select id="deemp"><option>50us</option><option>75us</option><option>关闭</option></select></div>
+          <div class="row"><label>收听</label><button id="listen" style="flex:1" class="primary">▶ 开始收听</button></div>
+          <div id="audStat" class="hint">音频：未开始</div>
+        </div>
+      </section>
+
+      <section class="panel closed" id="p-disp">
+        <h3>Display <span class="arr">▾</span></h3>
+        <div class="body">
+          <div class="row"><label>频谱高度</label><input type="range" id="split" min="12" max="85" value="44"><span class="val" id="splitTxt">44%</span></div>
+          <div class="row"><label>缩放</label><input type="range" id="zoom" min="0" max="100" value="0"><span class="val" id="zoomTxt">1.0x</span></div>
+          <div class="row"><label>波段</label><select id="bplan"></select></div>
+          <div class="row"><label>瀑布配色</label><select id="cmap"></select></div>
+          <div class="row"><label>频谱配色</label><select id="scolor">
+            <option value="auto">跟随瀑布色表</option>
+            <option value="classic" selected>经典蓝</option>
+            <option value="green">荧光绿</option>
+            <option value="amber">琥珀</option>
+            <option value="cyan">青色</option>
+            <option value="white">白色</option>
+            <option value="magenta">品红</option>
+          </select></div>
+          <div class="row"><label>音频缓冲</label><input type="range" id="abuf" min="30" max="200" value="70"><span class="val" id="abufTxt">0.7s</span></div>
+          <div class="row"><label>自动 dB</label><input type="checkbox" id="autoDb" checked style="flex:none"></div>
+          <div class="row"><label>峰值保持</label><input type="checkbox" id="peakHold" style="flex:none"></div>
+          <div class="row"><label>FFT 平滑</label><input type="checkbox" id="smooth" checked style="flex:none"></div>
+          <div class="hint">滚轮缩放；点击调谐；拖红线上的色块边缘改带宽。</div>
+        </div>
+      </section>
+
+      <section class="panel closed" id="p-scan">
+        <h3>Scanner <span class="arr">▾</span></h3>
+        <div class="body">
+          <div class="row"><label>范围</label><span style="flex:1">87.5 – 108 MHz</span></div>
+          <div class="row"><button id="scan" style="flex:1">🔍 开始扫描</button></div>
+          <div class="row"><button id="scanSave" style="flex:1" disabled>保存结果到书签</button></div>
+          <div id="scanInfo" class="hint">未扫描</div>
+        </div>
+      </section>
+      <section class="panel closed" id="p-fm">
+        <h3>Frequency Manager <span class="arr">▾</span></h3>
+        <div class="body">
+          <div class="row"><label>列表</label><select id="bmListSel"></select></div>
+          <div id="bmList"></div>
+          <div class="row"><button id="bmAdd" style="flex:1">＋ 当前</button><button id="bmDel" style="flex:1">刷新</button></div>
+          <div class="row"><button id="bmImport" style="flex:1">导入</button><button id="bmExport" style="flex:1">导出</button></div>
+          <input type="file" id="fileIn" accept=".json,application/json" style="display:none">
+          <div class="hint">文件与 SDR++ 的 frequency_manager_config.json / Export JSON 互通。</div>
+        </div>
+      </section>
+
+    </aside>
+
+    <div id="view">
+      <div id="radioBar">
+        <button id="tuneDown10" title="−1 MHz">−1M</button>
+        <button id="tuneDown" title="−100 kHz">◀</button>
+        <button id="tuneUp" title="+100 kHz">▶</button>
+        <button id="tuneUp10" title="+1 MHz">+1M</button>
+        <span class="sep"></span>
+        <button id="prevSt" title="上一个电台">电台◀</button>
+        <button id="nextSt" title="下一个电台">电台▶</button>
+        <span class="sep"></span>
+        <button id="prevCh" title="上一个书签">CH◀</button>
+        <button id="nextCh" title="下一个书签">CH▶</button>
+        <button id="saveCh" title="把当前频率存到书签">⭐ 存台</button>
+        <span class="sep"></span>
+        <button id="volDown" title="音量 −">VOL−</button>
+        <button id="volUp" title="音量 +">VOL+</button>
+      </div>
+      <canvas id="bandplan"></canvas>
+      <div id="specWrap"><canvas id="spec"></canvas></div>
+      <div id="splitter" title="上下拖动调整频谱/瀑布高度"></div>
+      <div id="waterWrap"><canvas id="water"></canvas></div>
+      <div id="rightBar">
+        <div class="rgroup"><span class="rlab">Zoom</span>
+          <div class="vslider" id="vsZoom"><div class="vfill"></div><div class="vthumb"></div></div></div>
+        <div class="rgroup"><span class="rlab">Max</span>
+          <div class="vslider" id="vsMax"><div class="vfill"></div><div class="vthumb"></div></div></div>
+        <div class="rgroup"><span class="rlab">Min</span>
+          <div class="vslider" id="vsMin"><div class="vfill"></div><div class="vthumb"></div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const SPEC_BINS = 1024;
+const BANDS = [
+  { f0: 87.5e6, f1: 108e6, name: 'FM Broadcast', color: '#1f6feb' },
+  { f0: 108e6, f1: 137e6, name: 'Air Band', color: '#1f9d55' },
+  { f0: 144e6, f1: 148e6, name: '2m Ham', color: '#9e6a03' },
+  { f0: 430e6, f1: 440e6, name: '70cm Ham', color: '#9e6a03' },
+  { f0: 433.05e6, f1: 434.79e6, name: 'ISM 433', color: '#6e40c9' },
+  { f0: 446e6, f1: 446.2e6, name: 'PMR446', color: '#6e40c9' },
+];
+const SPEC_COLORS = {
+  classic: { line: '#58a6ff', a1: 'rgba(47,129,247,0.55)', a2: 'rgba(47,129,247,0.02)' },
+  green:   { line: '#3fb950', a1: 'rgba(63,185,80,0.50)',  a2: 'rgba(63,185,80,0.02)' },
+  amber:   { line: '#d29922', a1: 'rgba(210,153,34,0.50)', a2: 'rgba(210,153,34,0.02)' },
+  cyan:    { line: '#39c5cf', a1: 'rgba(57,197,207,0.50)', a2: 'rgba(57,197,207,0.02)' },
+  white:   { line: '#e6edf3', a1: 'rgba(230,237,243,0.45)',a2: 'rgba(230,237,243,0.02)' },
+  magenta: { line: '#db61a2', a1: 'rgba(219,97,162,0.50)', a2: 'rgba(219,97,162,0.02)' },
+};
+
+const BAND_COLORS = {
+  amateur: '#ff0000', aviation: '#00ff00', broadcast: '#0000ff',
+  marine: '#00ffff', military: '#ffff00',
+};
+const MODE_BW = { WFM: 180000, NFM: 12500, AM: 10000, USB: 3000, LSB: 3000, CW: 500, DSB: 10000, RAW: 20000 };
+
+const S = {
+  ws: null, connected: false, running: false,
+  freq: 100e6, offset: 0, rate: 2e6, mode: 'WFM', bw: 180000, squelch: -100,
+  bits: 12, gain: 21, spec: new Float32Array(SPEC_BINS).fill(-120),
+  peak: new Float32Array(SPEC_BINS).fill(-120),
+  dbMin: -110, dbMax: -20, medDb: -70, autoDb: true, zoom: 1, cmap: 'classic',
+  cmaps: {}, bandplan: null, bpFile: '', scolor: 'classic', plot: SPEC_COLORS.classic,
+  listening: false, audioRate: 50000, stations: [], frames: 0,
+  tuneStep: 100000,
+  invertDb: true,
+  audioTarget: 0.7, bufLow: 0.45, bufHigh: 0.9, bufSeek: 2.0, bufSeekTo: 0.6,
+  bookmarks: { selectedList: 'General', lists: { General: { showOnWaterfall: true, bookmarks: {} } } },
+  drag: null, holdPeak: false, smooth: true,
+};
+const $ = id => document.getElementById(id);
+const vfo = () => S.freq + S.offset;
+
+/* ---------- 画布 ---------- */
+const cSpec = $('spec'), cWater = $('water'), cBand = $('bandplan');
+const gSpec = cSpec.getContext('2d'), gWater = cWater.getContext('2d'), gBand = cBand.getContext('2d');
+
+function fit(cv, h) {
+  const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(r.width * dpr));
+  const hh = Math.max(1, Math.round((h || r.height) * dpr));
+  if (cv.width !== w || cv.height !== hh) { cv.width = w; cv.height = hh; }
+  return { w, h: hh, dpr };
+}
+function resizeAll() {
+  // 改变大小前先保存旧瀑布，缩放后贴回去，避免瞬间变黑
+  let old = null;
+  if (cWater.width > 1 && cWater.height > 1) {
+    old = document.createElement('canvas');
+    old.width = cWater.width; old.height = cWater.height;
+    old.getContext('2d').drawImage(cWater, 0, 0);
+  }
+  fit(cSpec); fit(cWater); fit(cBand);
+  S.wfFull = false;
+  if (old) {
+    gWater.imageSmoothingEnabled = true;
+    gWater.drawImage(old, 0, 0, old.width, old.height, 0, 0, cWater.width, cWater.height);
+  } else {
+    gWater.fillStyle = '#05070a'; gWater.fillRect(0, 0, cWater.width, cWater.height);
+  }
+  placeRightBar();
+  drawSpec(); drawWaterfall(); drawBandplan();
+}
+
+function buildLutFromStops(map) {
+  // SDR++ colormap: 若干十六进制色标，线性插值到 256 级
+  const rgb = map.map(h => [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)]);
+  const lut = new Uint8Array(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255 * (rgb.length - 1);
+    const a = Math.floor(t), b = Math.min(rgb.length - 1, a + 1), f = t - a;
+    for (let c = 0; c < 3; c++) lut[i*3+c] = Math.round(rgb[a][c] + (rgb[b][c] - rgb[a][c]) * f);
+  }
+  return lut;
+}
+
+const CMAPS = (() => {
+  const mk = stops => {
+    const lut = new Uint8Array(256 * 3);
+    for (let i = 0; i < 256; i++) {
+      const t = i / 255;
+      let a = stops[0], b = stops[stops.length - 1];
+      for (let k = 0; k < stops.length - 1; k++)
+        if (t >= stops[k][0] && t <= stops[k + 1][0]) { a = stops[k]; b = stops[k + 1]; break; }
+      const f = (t - a[0]) / Math.max(1e-6, b[0] - a[0]);
+      for (let c = 0; c < 3; c++) lut[i * 3 + c] = Math.round(a[1][c] + (b[1][c] - a[1][c]) * f);
+    }
+    return lut;
+  };
+  return {
+    classic: mk([[0,[4,4,20]],[0.18,[10,30,90]],[0.35,[20,90,160]],[0.5,[30,170,200]],
+                 [0.62,[80,220,150]],[0.75,[240,220,80]],[0.88,[250,140,40]],[1,[255,255,255]]]),
+    turbo: mk([[0,[48,18,59]],[0.25,[70,107,227]],[0.5,[40,187,220]],[0.7,[160,218,57]],
+               [0.85,[245,160,30]],[1,[180,4,38]]]),
+    green: mk([[0,[0,0,0]],[0.4,[0,70,0]],[0.7,[0,180,0]],[1,[180,255,180]]]),
+    gray: mk([[0,[0,0,0]],[1,[255,255,255]]]),
+  };
+})();
+
+function viewSpan() { return { start: (SPEC_BINS / 2) * (1 - 1 / S.zoom), n: SPEC_BINS / S.zoom }; }
+function freqToX(f, w) {
+  const v = viewSpan();
+  const i = (f - (S.freq - S.rate / 2)) / (S.rate / SPEC_BINS) - v.start;
+  return i / v.n * w;
+}
+function xToFreq(x, w) {
+  const v = viewSpan();
+  return S.freq - S.rate / 2 + (v.start + (x / w) * v.n) * (S.rate / SPEC_BINS);
+}
+function fmtFreq(f) { return (f / 1e6).toFixed(S.zoom > 8 ? 4 : 3) + ' MHz'; }
+function snapFreq(f) {
+  if (!S.tuneStep || S.tuneStep <= 0) return f;
+  return Math.round(f / S.tuneStep) * S.tuneStep;
+}
+
+function fmtBw(v) { return v >= 1000 ? (v / 1000).toFixed(v >= 100000 ? 0 : 1) + ' kHz' : v.toFixed(0) + ' Hz'; }
+function niceStep(x) {
+  const p = Math.pow(10, Math.floor(Math.log10(Math.max(1, x))));
+  const m = x / p;
+  return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p;
+}
+
+function rgbAt(lut, t) {
+  const i = Math.max(0, Math.min(255, Math.round(t * 255))) * 3;
+  return [lut[i], lut[i + 1], lut[i + 2]];
+}
+function updatePlotColor() {
+  if (S.scolor !== 'auto') { S.plot = SPEC_COLORS[S.scolor] || SPEC_COLORS.classic; return; }
+  const c = S.cmaps[S.cmap];
+  if (!c) { S.plot = SPEC_COLORS.classic; return; }
+  const [r, g, b] = rgbAt(c.lut, 0.82);
+  S.plot = {
+    line: `rgb(${r},${g},${b})`,
+    a1: `rgba(${r},${g},${b},0.55)`,
+    a2: `rgba(${r},${g},${b},0.02)`,
+  };
+}
+
+function drawSpec() {
+  const w = cSpec.width, h = cSpec.height, dpr = window.devicePixelRatio || 1;
+  gSpec.clearRect(0, 0, w, h);
+  const v = viewSpan(), d0 = S.dbMin, d1 = S.dbMax;
+  const span = S.rate / S.zoom;
+  const step = niceStep(span / 8);
+
+  gSpec.font = `${10 * dpr}px sans-serif`;
+  gSpec.lineWidth = 1;
+  for (let d = Math.ceil(d0 / 10) * 10; d <= d1; d += 10) {
+    const y = h - (d - d0) / (d1 - d0) * h;
+    gSpec.strokeStyle = '#161d27';
+    gSpec.beginPath(); gSpec.moveTo(0, y); gSpec.lineTo(w, y); gSpec.stroke();
+    gSpec.fillStyle = '#4b5563';
+    gSpec.fillText(String(d), 2, Math.max(9, y - 2));
+  }
+  for (let f = Math.ceil((S.freq - span / 2) / step) * step; f <= S.freq + span / 2; f += step) {
+    const x = freqToX(f, w);
+    gSpec.strokeStyle = '#131a23';
+    gSpec.beginPath(); gSpec.moveTo(x, 0); gSpec.lineTo(x, h); gSpec.stroke();
+  }
+
+  const pts = [];
+  for (let k = 0; k < v.n; k++) {
+    const i = Math.floor(v.start + k);
+    if (i < 0 || i >= SPEC_BINS) continue;
+    const val = Math.max(d0, Math.min(d1, S.spec[i]));
+    pts.push([k / v.n * w, h - (val - d0) / (d1 - d0) * h]);
+  }
+  if (pts.length) {
+    const grad = gSpec.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, S.plot.a1);
+    grad.addColorStop(1, S.plot.a2);
+    gSpec.beginPath(); gSpec.moveTo(pts[0][0], h);
+    for (const [x, y] of pts) gSpec.lineTo(x, y);
+    gSpec.lineTo(pts[pts.length - 1][0], h); gSpec.closePath();
+    gSpec.fillStyle = grad; gSpec.fill();
+    gSpec.beginPath();
+    pts.forEach(([x, y], i) => i ? gSpec.lineTo(x, y) : gSpec.moveTo(x, y));
+    gSpec.strokeStyle = S.plot.line; gSpec.lineWidth = 1.3 * dpr; gSpec.stroke();
+  }
+  if (S.holdPeak) {
+    gSpec.beginPath(); let first = true;
+    for (let k = 0; k < v.n; k++) {
+      const i = Math.floor(v.start + k); if (i < 0 || i >= SPEC_BINS) continue;
+      const val = Math.max(d0, Math.min(d1, S.peak[i]));
+      const y = h - (val - d0) / (d1 - d0) * h;
+      first ? (gSpec.moveTo(k / v.n * w, y), first = false) : gSpec.lineTo(k / v.n * w, y);
+    }
+    gSpec.strokeStyle = 'rgba(210,153,34,.85)'; gSpec.lineWidth = 1 * dpr; gSpec.stroke();
+  }
+
+  const fx = freqToX(vfo(), w);
+  const halfW = (S.bw / 2) / S.rate * SPEC_BINS / v.n * w;
+  gSpec.fillStyle = 'rgba(120,170,255,.16)';
+  gSpec.fillRect(fx - halfW, 0, Math.max(2, halfW * 2), h);
+  gSpec.strokeStyle = 'rgba(120,170,255,.8)';
+  gSpec.beginPath();
+  gSpec.moveTo(fx - halfW, 0); gSpec.lineTo(fx - halfW, h);
+  gSpec.moveTo(fx + halfW, 0); gSpec.lineTo(fx + halfW, h); gSpec.stroke();
+  gSpec.strokeStyle = '#f85149'; gSpec.lineWidth = 1.2 * dpr;
+  gSpec.beginPath(); gSpec.moveTo(fx, 0); gSpec.lineTo(fx, h); gSpec.stroke();
+  gSpec.fillStyle = '#f85149';
+  gSpec.beginPath();
+  gSpec.moveTo(fx, 0); gSpec.lineTo(fx - 5 * dpr, 8 * dpr); gSpec.lineTo(fx + 5 * dpr, 8 * dpr);
+  gSpec.closePath(); gSpec.fill();
+
+  gSpec.fillStyle = 'rgba(160,200,255,.9)'; gSpec.font = `${10 * dpr}px sans-serif`;
+  gSpec.fillText(fmtBw(S.bw), Math.min(w - 50, fx + halfW + 3), 12 * dpr);
+
+  gSpec.fillStyle = '#d29922';
+  for (const st of S.stations) {
+    const x = freqToX(st.freq, w);
+    if (x < -5 || x > w + 5) continue;
+    gSpec.beginPath(); gSpec.moveTo(x, h - 2); gSpec.lineTo(x - 4, h - 12); gSpec.lineTo(x + 4, h - 12);
+    gSpec.closePath(); gSpec.fill();
+  }
+
+  gSpec.textAlign = 'center';
+  gSpec.fillStyle = '#8b949e';
+  for (let f = Math.ceil((S.freq - span / 2) / step) * step; f <= S.freq + span / 2; f += step) {
+    const x = freqToX(f, w);
+    if (x < 30 || x > w - 30) continue;
+    // 刻度线
+    gSpec.strokeStyle = '#2b3441';
+    gSpec.beginPath(); gSpec.moveTo(x, h - 4); gSpec.lineTo(x, h); gSpec.stroke();
+    gSpec.fillText(fmtFreq(f), x, h - 6);
+  }
+  gSpec.textAlign = 'start';
+  gSpec.fillStyle = 'rgba(230,237,243,.75)';
+  gSpec.fillText('VFO ' + fmtFreq(vfo()) + '   ' + S.mode, 6, 13 * dpr);
+  if (!S.running) {
+    gSpec.fillStyle = 'rgba(5,7,10,.55)';
+    gSpec.fillRect(0, 0, w, h);
+    gSpec.fillStyle = 'rgba(230,237,243,.85)';
+    gSpec.font = `${14 * dpr}px sans-serif`;
+    gSpec.textAlign = 'center';
+    gSpec.fillText('设备未采集 — 点击左上角 ▶ 开始', w / 2, h / 2);
+    gSpec.textAlign = 'start';
+    gSpec.font = `${10 * dpr}px sans-serif`;
+  }
+}
+
+function drawWaterfall() {
+  const w = cWater.width, h = cWater.height;
+  if (w < 2 || h < 2) return;
+  const v = viewSpan();
+  const lut = (S.cmaps[S.cmap] && S.cmaps[S.cmap].lut) || CMAPS.classic;
+  const row = gWater.createImageData(w, 1);
+  for (let x = 0; x < w; x++) {
+    const i = Math.floor(v.start + x / w * v.n);
+    const val = (i >= 0 && i < SPEC_BINS) ? S.spec[i] : -120;
+    let t = (val - S.dbMin) / (S.dbMax - S.dbMin);
+    t = Math.max(0, Math.min(1, t));
+    const c = Math.round(t * 255) * 3;
+    row.data[x*4] = lut[c]; row.data[x*4+1] = lut[c+1]; row.data[x*4+2] = lut[c+2]; row.data[x*4+3] = 255;
+  }
+  gWater.drawImage(cWater, 0, 1);
+  gWater.putImageData(row, 0, 0);
+}
+
+function drawBandplan() {
+  const w = cBand.width, h = cBand.height, dpr = window.devicePixelRatio || 1;
+  gBand.clearRect(0, 0, w, h);
+  const span = S.rate / S.zoom, f0 = S.freq - span / 2, f1 = S.freq + span / 2;
+  const bands = (S.bandplan && S.bandplan.bands) ? S.bandplan.bands : [];
+  for (const b of bands) {
+    if (b.end < f0 || b.start > f1) continue;
+    const x1 = freqToX(b.start, w), x2 = freqToX(b.end, w);
+    const color = BAND_COLORS[b.type] || '#808080';
+    gBand.globalAlpha = 0.42;
+    gBand.fillStyle = color;
+    gBand.fillRect(x1, 2, Math.max(1.5, x2 - x1), h - 4);
+    gBand.globalAlpha = 1;
+    if (x2 - x1 > 46) {
+      gBand.fillStyle = '#e6edf3'; gBand.font = `${9 * dpr}px sans-serif`;
+      gBand.fillText(b.name, Math.max(2, x1 + 3), h - 4);
+    }
+  }
+  // 当前 VFO 所在波段名
+  const cur = bands.find(b => vfo() >= b.start && vfo() <= b.end);
+  if (cur) {
+    gBand.fillStyle = 'rgba(230,237,243,.85)'; gBand.font = `${9 * dpr}px sans-serif`;
+    gBand.fillText(cur.name, 3, 11 * dpr);
+  }
+}
+
+/* ---------- WS ---------- */
+function connect() {
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+  ws.binaryType = 'arraybuffer';
+  S.ws = ws;
+  ws.onopen = () => {
+    S.connected = true;
+    if (S.listening) { if (pcmMode) send({ cmd: 'set', codec: 'pcm' }); else if (mseSupported()) restartMse(); }
+  };
+  ws.onclose = () => { S.connected = false; setTimeout(connect, 1500); };
+  ws.onerror = () => { try { ws.close(); } catch (e) {} };
+  ws.onmessage = ev => {
+    if (typeof ev.data === 'string') { onJson(JSON.parse(ev.data)); return; }
+    const dv = new DataView(ev.data);
+    const type = String.fromCharCode(dv.getUint8(0));
+    const n = dv.getUint16(2, true);
+    if (type === 'S') {
+      S.frames++;
+      const q = new Uint8Array(ev.data, 4, n);
+      for (let i = 0; i < n; i++) {
+        const v = q[i] - 140;
+        S.spec[i] = (S.smooth && S.frames > 1) ? S.spec[i] * 0.55 + v * 0.45 : v;
+        S.peak[i] = Math.max(S.spec[i], S.peak[i] - 8);
+      }
+      if (S.frames === 1) updateDbRange();
+      drawSpec(); drawWaterfall(); drawBandplan();
+    } else if (type === 'A') {
+      feedAudio(new Int16Array(ev.data, 4, n));
+    } else if (type === 'O') {
+      feedOpus(ev.data.slice(4, 4 + n));
+    }
+  };
+}
+function send(o) { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify(o)); }
+
+function onJson(m) {
+  if (m.type === 'status') {
+    S.freq = m.freq; S.offset = m.offset || 0; S.rate = m.rate; S.mode = m.mode;
+    S.bits = m.bits; S.bw = m.bw; S.squelch = m.squelch; S.gain = m.gain; S.running = m.running;
+    if (m.audio_rate) S.audioRate = m.audio_rate;
+    // 首次收到状态时，把残留的小偏移对齐到当前调谐步进
+    if (!S._gridInit) {
+      S._gridInit = true;
+      if (S.tuneStep > 0 && Math.abs(S.offset) > 1) {
+        const f = snapFreq(S.freq + S.offset);
+        if (Math.abs(f - (S.freq + S.offset)) > 1) send({ cmd: 'set', freq: f, offset: 0 });
+      }
+    }
+    if (document.activeElement !== $('freqBox')) $('freqBox').value = (vfo() / 1e6).toFixed(6);
+    $('modeBox').textContent = m.mode;
+    $('kAdc').textContent = m.bits + '-bit';
+    $('kIq').textContent = (m.iq_mbps || 0).toFixed(1) + ' MB/s';
+    $('kDown').textContent = (m.down_kbps || 0).toFixed(0) + ' KB/s';
+    $('kAud').textContent = (m.codec === 'opus' ? 'Opus ' : 'PCM ') + Math.round(m.audio_kbps) + ' kbps';
+    $('kCli').textContent = m.clients;
+    $('runBtn').textContent = S.running ? '■' : '▶';
+    $('runBtn').classList.toggle('on', S.running);
+    $('snrTxt').textContent = (m.snr || 0).toFixed(0) + ' dB';
+    $('snrFill').style.width = Math.max(0, Math.min(100, (m.snr || 0) * 1.6)) + '%';
+    $('st').textContent = S.running
+      ? ((m.iq_mbps || 0).toFixed(1) + ' MB/s · ' + (m.down_kbps || 0).toFixed(0) + ' KB/s')
+      : '未采集 · 点 ▶ 开始';
+    const eb = $('err');
+    if (m.error) { eb.style.display = 'block'; eb.textContent = 'SDR：' + m.error; } else eb.style.display = 'none';
+    if (document.activeElement !== $('rate')) $('rate').value = String(m.rate);
+    if (document.activeElement !== $('gain')) { $('gain').value = Math.round(m.gain); $('gainTxt').textContent = Math.round(m.gain) + ' dB'; }
+    if (document.activeElement !== $('mode')) $('mode').value = m.mode;
+    if (document.activeElement !== $('bw')) { $('bw').value = bwToSlider(m.bw); $('bwTxt').textContent = fmtBw(m.bw); }
+    if (document.activeElement !== $('sq')) { $('sq').value = m.squelch; $('sqTxt').textContent = m.squelch <= -99 ? '关闭' : m.squelch + ' dB'; }
+    $('b12').classList.toggle('on', m.bits === 12);
+    $('b8').classList.toggle('on', m.bits === 8);
+  } else if (m.type === 'audio_reset') {
+    if (S.listening && !pcmMode && mseSupported()) restartMse();
+  } else if (m.type === 'scan_started') {
+    $('scan').textContent = '扫描中…';
+    $('scanBtn').textContent = '…';
+    $('scanInfo').textContent = '正在扫描 87.5–108 MHz…';
+  } else if (m.type === 'scan') {
+    S.stations = m.stations || [];
+    $('scan').textContent = '🔍 重新扫描';
+    $('scanBtn').textContent = '🔍';
+    $('scanInfo').textContent = S.stations.length ? `找到 ${S.stations.length} 个电台` : '没有找到电台';
+    $('scanSave').disabled = !S.stations.length;
+    drawSpec();
+  }
+}
+
+/* ---------- 音频 ---------- */
+const audioEl = $('audioEl');
+let actx = null, nextTime = 0, mediaSource = null, srcBuf = null, mseReady = false;
+let opusQueue = [], fallbackTimer = null, pcmMode = false;
+
+function bwToSlider(bw) { return Math.round(Math.log10(Math.max(300, bw) / 300) / Math.log10(500000 / 300) * 1000); }
+function sliderToBw(v) { return Math.round(300 * Math.pow(500000 / 300, v / 1000)); }
+function mseSupported() { return !!(window.MediaSource && MediaSource.isTypeSupported('audio/webm; codecs="opus"')); }
+
+function initMse() {
+  if (mediaSource || !mseSupported()) return;
+  mediaSource = new MediaSource();
+  audioEl.preload = 'auto';
+  audioEl.src = URL.createObjectURL(mediaSource);
+  audioEl.load();
+  const onOpen = () => {
+    if (mediaSource.readyState !== 'open') return;
+    try {
+      srcBuf = mediaSource.addSourceBuffer('audio/webm; codecs="opus"');
+      srcBuf.addEventListener('updateend', pumpMse);
+      mseReady = true; opusQueue.length = 0; S.opusSync = false; S.audioArmed = true;
+      send({ cmd: 'set', codec: 'opus' });
+      audioEl.volume = Number($('vol').value) / 100;
+      audioEl.playbackRate = 1;
+      if (S.listening) audioEl.play().catch(() => {});
+      pumpMse();
+    } catch (e) { console.warn('MSE', e); }
+  };
+  mediaSource.addEventListener('sourceopen', onOpen);
+  if (mediaSource.readyState === 'open') onOpen();
+}
+function restartMse() {
+  if (mediaSource) {
+    try { URL.revokeObjectURL(audioEl.src); } catch (e) {}
+    try { audioEl.removeAttribute('src'); audioEl.load(); } catch (e) {}
+    mediaSource = null; srcBuf = null; mseReady = false; opusQueue = []; S.opusSync = false;
+  }
+  initMse();
+}
+function feedOpus(buf) {
+  if (!mseReady || !S.audioArmed) return;
+  if (!S.opusSync) {
+    const h = new Uint8Array(buf, 0, 4);
+    if (!(h[0] === 0x1A && h[1] === 0x45 && h[2] === 0xDF && h[3] === 0xA3)) return;
+    S.opusSync = true; opusQueue.length = 0;
+  }
+  opusQueue.push(buf);
+  if (opusQueue.length > 400) opusQueue.shift();
+  pumpMse();
+}
+function pumpMse() {
+  if (!mseReady || !srcBuf || srcBuf.updating || !opusQueue.length) return;
+  try { srcBuf.appendBuffer(opusQueue.shift()); } catch (e) { opusQueue.shift(); }
+}
+setInterval(() => {
+  if (!mseReady || !audioEl.buffered.length) return;
+  const b = audioEl.buffered, end = b.end(b.length - 1), lag = end - audioEl.currentTime;
+  if (!audioEl.paused) {
+    // 留足安全缓冲（0.4~0.8s），小漂移用播放速率补，只有落后很多才跳
+    if (lag > S.bufSeek) { audioEl.currentTime = Math.max(b.start(0), end - S.bufSeekTo); audioEl.playbackRate = 1; }
+    else if (lag > S.bufHigh) audioEl.playbackRate = 1.03;
+    else if (lag < S.bufLow) audioEl.playbackRate = 0.97;
+    else audioEl.playbackRate = 1;
+  }
+  if (srcBuf && !srcBuf.updating && audioEl.currentTime - b.start(0) > 4) {
+    try { srcBuf.remove(b.start(0), audioEl.currentTime - 2); } catch (e) {}
+  }
+  if (S.listening && !pcmMode) $('audStat').textContent = 'Opus 播放中 · 延迟 ' + lag.toFixed(2) + 's';
+}, 600);
+
+function feedAudio(pcm) {
+  if (!S.listening || !actx) return;
+  const buf = actx.createBuffer(1, pcm.length, S.audioRate);
+  const ch = buf.getChannelData(0);
+  const g = Number($('vol').value) / 100;
+  for (let i = 0; i < pcm.length; i++) ch[i] = (pcm[i] / 32768) * g;
+  const src = actx.createBufferSource();
+  src.buffer = buf; src.connect(actx.destination);
+  const t = Math.max(actx.currentTime + 0.05, nextTime);
+  src.start(t); nextTime = t + buf.duration;
+  if (nextTime - actx.currentTime > 0.6) nextTime = actx.currentTime + 0.1;
+}
+async function startPcm(reason) {
+  if (pcmMode) return;
+  pcmMode = true;
+  $('audStat').textContent = 'PCM 模式' + (reason ? '（' + reason + '）' : '');
+  try { audioEl.pause(); } catch (e) {}
+  if (mediaSource) {
+    try { URL.revokeObjectURL(audioEl.src); } catch (e) {}
+    try { audioEl.removeAttribute('src'); audioEl.load(); } catch (e) {}
+    mediaSource = null; srcBuf = null; mseReady = false; opusQueue = []; S.opusSync = false;
+  }
+  send({ cmd: 'set', codec: 'pcm' });
+  if (!actx) { actx = new AudioContext({ sampleRate: S.audioRate }); await actx.resume(); nextTime = actx.currentTime + 0.1; }
+}
+
+$('listen').onclick = async () => {
+  const btn = $('listen');
+  if (!S.listening) {
+    if (!S.running) { send({ cmd: 'set', paused: false }); await new Promise(r => setTimeout(r, 600)); }
+    if (mseSupported()) {
+      $('audStat').textContent = '正在连接音频…';
+      initMse();
+      audioEl.volume = Number($('vol').value) / 100;
+      try { await audioEl.play(); } catch (e) { $('audStat').textContent = '播放被拒绝：' + e.message; }
+      clearTimeout(fallbackTimer);
+      fallbackTimer = setTimeout(() => {
+        if (!audioEl.buffered.length || audioEl.readyState < 2) startPcm('Opus 无数据');
+      }, 4000);
+    } else await startPcm('浏览器不支持 MSE');
+    S.listening = true; btn.textContent = '⏸ 停止收听'; btn.classList.remove('primary');
+  } else {
+    S.listening = false; S.audioArmed = false; S.opusSync = false; pcmMode = false;
+    clearTimeout(fallbackTimer);
+    try { audioEl.pause(); } catch (e) {}
+    if (mediaSource) {
+      try { URL.revokeObjectURL(audioEl.src); } catch (e) {}
+      try { audioEl.removeAttribute('src'); audioEl.load(); } catch (e) {}
+      mediaSource = null; srcBuf = null; mseReady = false; opusQueue = [];
+    }
+    if (actx) { actx.close(); actx = null; }
+    btn.textContent = '▶ 开始收听'; btn.classList.add('primary');
+    $('audStat').textContent = '音频：已停止';
+  }
+};
+audioEl.addEventListener('playing', () => clearTimeout(fallbackTimer));
+audioEl.addEventListener('error', () => { if (S.listening && !pcmMode) startPcm('Opus 解码失败'); });
+
+/* ---------- 控件 ---------- */
+$('menuBtn').onclick = () => $('side').classList.toggle('hidden');
+document.querySelectorAll('.panel > h3').forEach(h => h.onclick = () => h.parentElement.classList.toggle('closed'));
+$('runBtn').onclick = () => send({ cmd: 'set', paused: S.running });
+$('scanBtn').onclick = () => { S.stations = []; send({ cmd: 'scan' }); $('scanBtn').textContent = '…'; };
+$('freqBox').addEventListener('change', () => {
+  const v = parseFloat($('freqBox').value.replace(/[^\d.]/g, ''));
+  if (isFinite(v)) {
+    const f = snapFreq(v * 1e6);
+    S.offset = 0;
+    send({ cmd: 'set', freq: f, offset: 0 });
+    $('freqBox').value = (f / 1e6).toFixed(6);
+  }
+});
+$('rate').onchange = () => send({ cmd: 'set', rate: Number($('rate').value) });
+$('step').onchange = () => {
+  S.tuneStep = Number($('step').value);
+  // 切换步进时把当前 VFO 对齐到新网格
+  if (S.tuneStep > 0) {
+    const f = snapFreq(vfo());
+    send({ cmd: 'set', freq: f, offset: 0 });
+    S.freq = f; S.offset = 0;
+    $('freqBox').value = (f / 1e6).toFixed(6);
+  }
+};
+$('gain').oninput = () => { $('gainTxt').textContent = $('gain').value + ' dB'; send({ cmd: 'set', gain: Number($('gain').value) }); };
+$('b12').onclick = () => send({ cmd: 'set', bits: 12 });
+$('b8').onclick = () => send({ cmd: 'set', bits: 8 });
+$('mode').onchange = () => { const mode = $('mode').value; send({ cmd: 'set', mode, bw: MODE_BW[mode] || 10000 }); };
+$('bw').oninput = () => { const bw = sliderToBw(Number($('bw').value)); $('bwTxt').textContent = fmtBw(bw); send({ cmd: 'set', bw }); };
+$('sq').oninput = () => { const v = Number($('sq').value); $('sqTxt').textContent = v <= -99 ? '关闭' : v + ' dB'; send({ cmd: 'set', squelch: v }); };
+$('vol').oninput = () => { if (S.listening && !pcmMode) audioEl.volume = Number($('vol').value) / 100; };
+$('cmap').onchange = () => { S.cmap = $('cmap').value; updatePlotColor(); drawSpec(); };
+$('autoDb').onchange = () => {
+  S.autoDb = $('autoDb').checked;
+  if (S.autoDb) S.__dbInit = 0;
+};
+$('scolor').onchange = () => { S.scolor = $('scolor').value; updatePlotColor(); drawSpec(); };
+$('bplan').onchange = () => loadBandplan($('bplan').value);
+$('peakHold').onchange = () => { S.holdPeak = $('peakHold').checked; if (!S.holdPeak) S.peak.fill(-120); };
+$('smooth').onchange = () => { S.smooth = $('smooth').checked; };
+$('zoom').oninput = () => setZoom(sliderToZoom(Number($('zoom').value)));
+function sliderToZoom(v) { return Math.pow(32, v / 100); }
+$('abuf').oninput = () => {
+  S.audioTarget = Number($('abuf').value) / 100;
+  S.bufLow = Math.max(0.15, S.audioTarget * 0.65);
+  S.bufHigh = S.audioTarget * 1.3;
+  S.bufSeek = S.audioTarget * 2.8;
+  S.bufSeekTo = S.audioTarget * 0.85;
+  $('abufTxt').textContent = S.audioTarget.toFixed(1) + 's';
+};
+
+/* ---------- 右侧自定义竖滑条 ---------- */
+let renderZoomFn = null, renderMaxFn = null, renderMinFn = null;
+
+function makeVSlider(el, min, max, getVal, setVal, invertFn) {
+  const thumb = el.querySelector('.vthumb'), fill = el.querySelector('.vfill');
+  let dragging = false;
+  let frac = 0.5;                     // 视觉位置：0=底部 1=顶部（拖动时跟手）
+
+  const valFromFrac = f => {
+    const v = min + f * (max - min);
+    return (invertFn && invertFn()) ? (min + max - v) : v;
+  };
+  const fracFromVal = v => {
+    let f = (v - min) / (max - min);
+    if (invertFn && invertFn()) f = 1 - f;
+    return Math.min(1, Math.max(0, f));
+  };
+  const fracFromEvent = ev => {
+    const r = el.getBoundingClientRect();
+    const t = (ev.clientY - r.top) / Math.max(1, r.height);
+    return 1 - Math.min(1, Math.max(0, t));   // 顶部 = 1
+  };
+  const paint = () => {
+    thumb.style.bottom = (frac * 100) + '%';
+    fill.style.height = (frac * 100) + '%';
+  };
+
+  el.addEventListener('pointerdown', ev => {
+    dragging = true;
+    try { el.setPointerCapture(ev.pointerId); } catch (e) {}
+    frac = fracFromEvent(ev); paint(); setVal(valFromFrac(frac));
+    if (ev.cancelable) ev.preventDefault();
+  }, { passive: false });
+  el.addEventListener('pointermove', ev => {
+    if (!dragging) return;
+    frac = fracFromEvent(ev); paint(); setVal(valFromFrac(frac));
+    if (ev.cancelable) ev.preventDefault();
+  });
+  const stop = () => { dragging = false; };
+  el.addEventListener('pointerup', stop);
+  el.addEventListener('pointercancel', stop);
+  el.addEventListener('wheel', ev => {
+    ev.preventDefault();
+    const step = (max - min) / 50;
+    const v = getVal() + (ev.deltaY < 0 ? step : -step);
+    setVal(v);
+  }, { passive: false });
+
+  const render = () => { if (!dragging) { frac = fracFromVal(getVal()); paint(); } };
+  render();
+  return render;
+}
+
+function placeRightBar() {
+  const bar = $('rightBar'), view = $('view');
+  if (!bar || !view) return;
+  const vr = view.getBoundingClientRect();
+  const vv = window.visualViewport;
+  const visBottom = vv ? (vv.offsetTop + vv.height) : window.innerHeight;
+  const top = Math.max(vr.top + 4, 60);
+  const bottom = Math.min(vr.bottom, visBottom) - 6;
+  bar.style.top = top + 'px';
+  bar.style.height = Math.max(140, bottom - top) + 'px';
+}
+window.addEventListener('resize', () => placeRightBar());
+window.addEventListener('orientationchange', () => setTimeout(placeRightBar, 250));
+if (window.visualViewport) {
+  visualViewport.addEventListener('resize', () => placeRightBar());
+  visualViewport.addEventListener('scroll', () => placeRightBar());
+}
+
+function initRightBar() {
+  renderZoomFn = makeVSlider($('vsZoom'), 0, 100,
+    () => Math.log(S.zoom) / Math.log(32) * 100,
+    v => { setZoom(sliderToZoom(v)); });
+  renderMaxFn = makeVSlider($('vsMax'), -120, 20,
+    () => S.dbMax,
+    v => {
+      S.autoDb = false; $('autoDb').checked = false;
+      S.dbMax = Math.min(20, Math.max(S.dbMin + 8, v));   // 只动顶端
+      drawSpec();
+    }, () => S.invertDb);
+  renderMinFn = makeVSlider($('vsMin'), -160, 0,
+    () => S.dbMin,
+    v => {
+      S.autoDb = false; $('autoDb').checked = false;
+      S.dbMin = Math.max(-160, Math.min(S.dbMax - 8, v));  // 只动底端
+      drawSpec();
+    }, () => S.invertDb);
+  placeRightBar();
+  window.__renderZoom = renderZoomFn;
+  window.__renderMax = renderMaxFn;
+  window.__renderMin = renderMinFn;
+}
+
+function setZoom(z) {
+  S.zoom = Math.max(1, Math.min(32, z));
+  const v = Math.round(Math.log(S.zoom) / Math.log(32) * 100);
+  $('zoom').value = v;
+  if (window.__renderZoom) window.__renderZoom();
+  $('zoomTxt').textContent = S.zoom.toFixed(1) + 'x';
+  if (Math.abs(S.offset) > S.rate / 2 / S.zoom) { S.offset = 0; send({ cmd: 'set', offset: 0 }); }
+  drawSpec(); drawWaterfall(); drawBandplan();
+}
+
+/* ---------- 交互 ---------- */
+function canvasPos(cv, ev) { const r = cv.getBoundingClientRect(); return { x: ev.clientX - r.left, w: r.width }; }
+function hitTest(x, w) {
+  const fx = freqToX(vfo(), w);
+  const v = viewSpan();
+  const halfW = (S.bw / 2) / (S.rate / SPEC_BINS) / v.n * w;
+  if (Math.abs(x - fx) < 6) return { type: 'vfo' };
+  if (Math.abs(x - (fx - halfW)) < 6) return { type: 'edge', side: -1 };
+  if (Math.abs(x - (fx + halfW)) < 6) return { type: 'edge', side: 1 };
+  return { type: 'tune' };
+}
+let dragState = null;
+cSpec.addEventListener('mousedown', ev => {
+  const { x, w } = canvasPos(cSpec, ev);
+  const hit = hitTest(x, w);
+  dragState = { type: hit.type };
+  if (hit.type === 'tune') applyTune(x, w);
+  ev.preventDefault();
+});
+cWater.addEventListener('mousedown', ev => { const { x, w } = canvasPos(cWater, ev); applyTune(x, w); });
+window.addEventListener('mousemove', ev => {
+  if (!dragState) return;
+  const { x, w } = canvasPos(cSpec, ev);
+  if (dragState.type === 'vfo' || dragState.type === 'tune') {
+    const target = snapFreq(xToFreq(x, w));
+    S.offset = Math.max(-S.rate / 2 * 0.95, Math.min(S.rate / 2 * 0.95, target - S.freq));
+    send({ cmd: 'set', offset: S.offset });
+    $('freqBox').value = (vfo() / 1e6).toFixed(6);
+    drawSpec();
+  } else if (dragState.type === 'edge') {
+    const bw = Math.max(300, Math.min(500000, Math.abs(xToFreq(x, w) - vfo()) * 2));
+    S.bw = bw; send({ cmd: 'set', bw });
+    $('bwTxt').textContent = fmtBw(bw);
+    drawSpec();
+  }
+});
+window.addEventListener('mouseup', () => { dragState = null; });
+function applyTune(x, w) {
+  const target = snapFreq(xToFreq(x, w));
+  S.offset = Math.max(-S.rate / 2 * 0.95, Math.min(S.rate / 2 * 0.95, target - S.freq));
+  send({ cmd: 'set', offset: S.offset });
+  $('freqBox').value = (vfo() / 1e6).toFixed(6);
+  drawSpec();
+}
+[cSpec, cWater].forEach(cv => cv.addEventListener('wheel', ev => {
+  ev.preventDefault();
+  setZoom(S.zoom * (ev.deltaY < 0 ? 1.25 : 0.8));
+}, { passive: false }));
+
+/* ---------- 收音机按键 ---------- */
+function tuneBy(delta) {
+  const f = snapFreq(vfo() + delta);
+  S.freq = f; S.offset = 0;
+  send({ cmd: 'set', freq: f, offset: 0 });
+  $('freqBox').value = (f / 1e6).toFixed(6);
+  drawSpec();
+}
+
+function stepSize() { return S.tuneStep > 0 ? S.tuneStep : 100000; }
+
+function gotoTune(f, mode) {
+  f = snapFreq(f);
+  S.freq = f; S.offset = 0;
+  const m = mode || (S.mode === 'WFM' ? 'WFM' : S.mode);
+  send({ cmd: 'set', freq: f, offset: 0, mode: m, bw: MODE_BW[m] || S.bw });
+  $('freqBox').value = (f / 1e6).toFixed(6);
+  drawSpec();
+}
+
+function gotoStation(dir) {
+  const list = (S.stations || []).slice().sort((a, b) => a.freq - b.freq);
+  if (!list.length) { $('scanInfo') && ($('scanInfo').textContent = '先点 🔍 扫描，才能跳电台'); return; }
+  const cur = vfo();
+  let idx;
+  if (dir > 0) idx = list.findIndex(x => x.freq > cur + 1000);
+  else {
+    const rev = list.slice().reverse();
+    const j = rev.findIndex(x => x.freq < cur - 1000);
+    idx = j < 0 ? -1 : list.length - 1 - j;
+  }
+  if (idx < 0) idx = dir > 0 ? 0 : list.length - 1;   // 到头回绕
+  gotoTune(list[idx].freq, 'WFM');
+  drawSpec();
+}
+
+function cycleBookmark(dir) {
+  const cur = currentList();
+  const bms = (S.bookmarks.lists?.[cur]?.bookmarks) || {};
+  const items = Object.entries(bms).map(([n, b]) => ({ n, f: b.frequency, b }))
+    .sort((a, b) => a.f - b.f);
+  if (!items.length) return;
+  const now = vfo();
+  let i = items.findIndex(x => Math.abs(x.f - now) < 5000);
+  if (i < 0) {
+    i = dir > 0 ? items.findIndex(x => x.f > now) : -1;
+    if (i < 0) i = dir > 0 ? 0 : items.length - 1;
+  } else {
+    i = (i + dir + items.length) % items.length;
+  }
+  const it = items[i];
+  S.freq = it.f; S.offset = 0;
+  send({ cmd: 'set', freq: it.f, offset: 0, mode: it.b.mode, bw: it.b.bandwidth });
+  $('freqBox').value = (it.f / 1e6).toFixed(6);
+  $('mode').value = it.b.mode;
+  drawSpec();
+}
+
+$('tuneDown').onclick = () => tuneBy(-stepSize());
+$('tuneUp').onclick = () => tuneBy(stepSize());
+$('tuneDown10').onclick = () => tuneBy(-10 * stepSize());
+$('tuneUp10').onclick = () => tuneBy(10 * stepSize());
+$('prevSt').onclick = () => gotoStation(-1);
+$('nextSt').onclick = () => gotoStation(1);
+$('prevCh').onclick = () => cycleBookmark(-1);
+$('nextCh').onclick = () => cycleBookmark(1);
+$('saveCh').onclick = () => $('bmAdd').click();
+$('volDown').onclick = () => { const v = $('vol'); v.value = Math.max(0, Number(v.value) - 10); v.dispatchEvent(new Event('input')); };
+$('volUp').onclick = () => { const v = $('vol'); v.value = Math.min(100, Number(v.value) + 10); v.dispatchEvent(new Event('input')); };
+
+/* ---------- 书签 ---------- */
+async function loadBookmarks() {
+  try { S.bookmarks = await (await fetch('/api/bookmarks')).json(); } catch (e) {}
+  renderBookmarks();
+}
+function currentList() { return $('bmListSel').value || S.bookmarks.selectedList || 'General'; }
+function renderBookmarks() {
+  const sel = $('bmListSel');
+  const lists = Object.keys(S.bookmarks.lists || {});
+  if (!lists.length) lists.push('General');
+  const cur = sel.value || S.bookmarks.selectedList || lists[0];
+  sel.innerHTML = lists.map(l => `<option ${l === cur ? 'selected' : ''}>${l}</option>`).join('');
+  const bms = (S.bookmarks.lists?.[cur]?.bookmarks) || {};
+  const box = $('bmList');
+  const names = Object.keys(bms).sort((a, b) => bms[a].frequency - bms[b].frequency);
+  box.innerHTML = names.length ? '' : '<div style="padding:6px;color:#7d8590">（空）</div>';
+  for (const n of names) {
+    const b = bms[n];
+    const d = document.createElement('div');
+    d.className = 'bm';
+    d.innerHTML = `<span class="f">${(b.frequency / 1e6).toFixed(3)}</span><span class="m">${b.mode}</span><span class="x">✕</span>`;
+    d.onclick = ev => {
+      if (ev.target.classList.contains('x')) return;
+      S.freq = b.frequency; S.offset = 0;
+      send({ cmd: 'set', freq: b.frequency, offset: 0, mode: b.mode, bw: b.bandwidth });
+      $('freqBox').value = (b.frequency / 1e6).toFixed(6);
+      $('mode').value = b.mode;
+    };
+    d.querySelector('.x').onclick = ev => { ev.stopPropagation(); delete bms[n]; saveBookmarks(); };
+    box.appendChild(d);
+  }
+}
+async function saveBookmarks() {
+  try {
+    await fetch('/api/bookmarks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(S.bookmarks) });
+  } catch (e) {}
+  renderBookmarks();
+}
+$('bmListSel').onchange = () => { S.bookmarks.selectedList = currentList(); renderBookmarks(); };
+$('bmAdd').onclick = () => {
+  const list = currentList();
+  S.bookmarks.lists ||= {};
+  S.bookmarks.lists[list] ||= { showOnWaterfall: true, bookmarks: {} };
+  S.bookmarks.lists[list].bookmarks[`${S.mode} ${(vfo() / 1e6).toFixed(3)}`] = { frequency: vfo(), bandwidth: S.bw, mode: S.mode };
+  saveBookmarks();
+};
+$('bmDel').onclick = renderBookmarks;
+$('bmImport').onclick = () => $('fileIn').click();
+$('fileIn').onchange = async () => {
+  const f = $('fileIn').files[0]; if (!f) return;
+  try {
+    const body = JSON.parse(await f.text());
+    const r = await fetch('/api/bookmarks/import?list=' + encodeURIComponent(currentList()), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    await loadBookmarks();
+    alert('导入完成：' + (j.imported || 0) + ' 条');
+  } catch (e) { alert('导入失败：' + e.message); }
+  $('fileIn').value = '';
+};
+$('bmExport').onclick = () => { window.location = '/api/bookmarks/export?list=' + encodeURIComponent(currentList()); };
+
+/* ---------- 扫描 ---------- */
+$('scan').onclick = () => { S.stations = []; send({ cmd: 'scan' }); };
+$('scanSave').onclick = async () => {
+  try {
+    const r = await fetch('/api/bookmarks/scan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ list: 'Scan', stations: S.stations, mode: 'WFM', bandwidth: 180000 }),
+    });
+    const j = await r.json();
+    await loadBookmarks();
+    // 自动切到 Scan 列表，方便直接看/点
+    S.bookmarks.selectedList = 'Scan';
+    $('bmListSel').value = 'Scan';
+    renderBookmarks();
+    $('scanInfo').textContent = `已保存 ${j.count} 条到列表 Scan`;
+  } catch (e) { alert('保存失败：' + e.message); }
+};
+
+/* ---------- dB 自适应 ---------- */
+function updateDbRange() {
+  const arr = Array.from(S.spec).sort((a, b) => a - b);
+  if (!arr.length) return;
+  const p10 = arr[Math.floor(arr.length * 0.1)], p99 = arr[Math.floor(arr.length * 0.99)];
+  const med = arr[Math.floor(arr.length * 0.5)];
+  S.medDb = med;
+  if (!S.autoDb) return;
+  const fMin = med - 8, fMax = med + 24;    // 32 dB 窗：噪声靠下，信号跳出来
+  const first = (S.__dbInit = (S.__dbInit || 0) + 1) <= 3;
+  if (first) { S.dbMin = fMin; S.dbMax = fMax; }
+  else {
+    S.dbMin += (fMin - S.dbMin) * 0.12;
+    S.dbMax += (fMax - S.dbMax) * 0.12;
+  }
+  if (window.__renderMin) window.__renderMin();
+  if (window.__renderMax) window.__renderMax();
+}
+setInterval(updateDbRange, 1000);
+
+/* ---------- SDR++ 资源（波段/色表） ---------- */
+async function loadRes() {
+  let res = { bandplans: [], colormaps: [] };
+  try { res = await (await fetch('/api/res')).json(); } catch (e) { return; }
+  for (const c of res.colormaps) {
+    if (Array.isArray(c.map) && c.map.length >= 2) {
+      S.cmaps[c.file] = { name: c.name, lut: buildLutFromStops(c.map) };
+    }
+  }
+  const cmSel = $('cmap');
+  cmSel.innerHTML = Object.entries(S.cmaps).map(([f, c]) => `<option value="${f}">${c.name}</option>`).join('');
+  const prefer = S.cmaps['classic.json'] ? 'classic.json' : Object.keys(S.cmaps)[0];
+  if (prefer) { cmSel.value = prefer; S.cmap = prefer; }
+  updatePlotColor();
+  const bpSel = $('bplan');
+  bpSel.innerHTML = res.bandplans.map(b => `<option value="${b.file}">${b.name}</option>`).join('');
+  const def = res.bandplans.find(b => /china/i.test(b.file) || /China/i.test(b.name))
+            || res.bandplans.find(b => b.file === 'general.json') || res.bandplans[0];
+  if (def) { bpSel.value = def.file; await loadBandplan(def.file); }
+}
+
+async function loadBandplan(file) {
+  try {
+    S.bandplan = await (await fetch('/res/bandplans/' + file)).json();
+    S.bpFile = file;
+    drawBandplan();
+  } catch (e) { console.warn('bandplan', e); }
+}
+
+/* ---------- 初始化 ---------- */
+setInterval(() => { $('clock').textContent = new Date().toTimeString().slice(0, 5); }, 1000);
+initRightBar();
+resizeAll();
+connect();
+loadBookmarks();
+loadRes();
+if (window.ResizeObserver) {
+  const ro = new ResizeObserver(() => { clearTimeout(window.__rz); window.__rz = setTimeout(resizeAll, 60); });
+  ro.observe($('view'));
+  ro.observe($('specWrap'));
+  ro.observe($('waterWrap'));
+}
+</script>
+</body>
+</html>

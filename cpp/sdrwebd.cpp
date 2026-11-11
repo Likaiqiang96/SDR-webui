@@ -1352,7 +1352,7 @@ void Sdr::do_scan() {
     for (double f = f0; f <= f1 + 1; f += step) {
         try {
             dev_->setFrequency(SOAPY_SDR_RX, 0, f);
-            usleep(120000);
+            usleep(150000);
             void* bufs[1] = {buf_.data()};
             int flags = 0;
             long long tns = 0;
@@ -1395,46 +1395,43 @@ void Sdr::do_scan() {
             std::vector<float> sorted = dbv;
             std::sort(sorted.begin(), sorted.end());
             float floor = sorted[sorted.size() / 5];
-            float thr = floor + 6.0f;
+            float thr = floor + 4.0f;
 
-            // 平滑后找连续段
-            int k = std::max(3, (int)lround(6000.0 / bin_hz));
-            if (k % 2 == 0) k++;
-            std::vector<float> sm(dbv.size(), 0);
-            for (size_t i = 0; i < dbv.size(); i++) {
-                float s = 0; int c = 0;
-                for (int j = -k / 2; j <= k / 2; j++) {
-                    int idx = (int)i + j;
-                    if (idx >= 0 && idx < (int)dbv.size()) { s += dbv[idx]; c++; }
-                }
-                sm[i] = s / c;
-            }
-            size_t i = 0;
-            while (i < sm.size()) {
-                if (sm[i] <= thr) { i++; continue; }
-                size_t j = i;
-                while (j + 1 < sm.size() && sm[j + 1] > thr) j++;
-                // 合并 25kHz 内的碎片
-                while (j + 1 < sm.size()) {
-                    size_t gap_end = j + 1;
-                    while (gap_end < sm.size() && sm[gap_end] <= thr) gap_end++;
-                    if (gap_end < sm.size() && (gap_end - j - 1) * bin_hz < 25000) j = gap_end;
-                    else break;
-                    while (j + 1 < sm.size() && sm[j + 1] > thr) j++;
-                }
-                double width = (j - i + 1) * bin_hz;
-                int pi = (int)i;
-                for (size_t q = i; q <= j; q++) if (dbv[q] > dbv[pi]) pi = (int)q;
-                float pk = dbv[pi];
-                if (width >= 55e3 && pk >= -85 && pk - floor >= 14.0f) {
-                    double sum = 0, wsum = 0;
-                    for (size_t q = i; q <= j; q++) {
-                        float w = powf(10.0f, std::min(0.0f, dbv[q] - pk) / 10.0f);
-                        sum += w; wsum += w * fvv[q];
+            // 噪声底取中位数，找高于 底噪+6dB 的连续段
+            {
+                std::vector<float> srt = dbv;
+                std::sort(srt.begin(), srt.end());
+                float med = srt[srt.size() / 2];
+                float thr = med + 6.0f;
+                const double gap_hz = 30e3;
+                size_t i = 0;
+                while (i < dbv.size()) {
+                    if (dbv[i] <= thr) { i++; continue; }
+                    size_t j = i;
+                    while (j + 1 < dbv.size() && dbv[j + 1] > thr) j++;
+                    // 合并 30kHz 内的碎片
+                    while (j + 1 < dbv.size()) {
+                        size_t e = j + 1;
+                        while (e < dbv.size() && dbv[e] <= thr) e++;
+                        if (e < dbv.size() && (e - j - 1) * bin_hz < gap_hz) {
+                            j = e;
+                            while (j + 1 < dbv.size() && dbv[j + 1] > thr) j++;
+                        } else break;
                     }
-                    res.push_back({f + wsum / sum, pk});
+                    double width = (j - i + 1) * bin_hz;
+                    int pi = (int)i;
+                    for (size_t q = i; q <= j; q++) if (dbv[q] > dbv[pi]) pi = (int)q;
+                    float pk = dbv[pi];
+                    if (width >= 60e3 && width <= 700e3 && pk - med >= 5.0f) {
+                        double sum = 0, wsum = 0;
+                        for (size_t q = i; q <= j; q++) {
+                            float w = powf(10.0f, std::min(0.0f, dbv[q] - pk) / 10.0f);
+                            sum += w; wsum += w * fvv[q];
+                        }
+                        res.push_back({f + wsum / sum, pk});
+                    }
+                    i = j + 1;
                 }
-                i = j + 1;
             }
         } catch (...) {}
     }

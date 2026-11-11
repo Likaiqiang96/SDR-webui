@@ -84,8 +84,7 @@ struct Params {
     int bits = 12;
     bool paused = true;
     double spec_fps = 12.0;    // 频谱/瀑布刷新率（帧/秒）
-    bool denoise = false;      // 音频降噪
-    double denoise_amt = 1.0;  // 降噪强度 0..1.5
+    double denoise_amt = 1.0;  // 降噪强度 0..1
 };
 
 static std::mutex g_mtx;
@@ -550,86 +549,6 @@ static std::shared_ptr<Encoder> make_encoder(const std::function<void(const char
 }
 
 
-
-// ------------------------------------------------------------------ 音频降噪（谱减 + 重叠相加）
-// 每 256 个样本做一次 512 点 STFT，谱减后重叠相加；延迟 256 样本（~5ms），不改音高。
-struct Denoiser {
-    int N = 512, hop = 256;
-    std::vector<float> win, in_buf, ola;
-    std::vector<cfloat> fin, fout;
-    std::vector<float> noise;
-    std::vector<float> pending;      // 已算好、待下发的样本
-    size_t pend_pos = 0;
-    fftwf_plan plan = nullptr, iplan = nullptr;
-    int fill = 0;
-    bool primed = false;
-    float strength = 1.0f;
-    bool ready = false;
-
-    void init(int n = 512) {
-        N = n; hop = n / 2;
-        win.resize(N);
-        for (int i = 0; i < N; i++) win[i] = 0.5f - 0.5f * cosf(2.0f * (float)M_PI * i / (N - 1));
-        in_buf.assign(N, 0.0f);
-        ola.assign(N, 0.0f);
-        fin.assign(N, cfloat(0, 0));
-        fout.assign(N, cfloat(0, 0));
-        noise.assign(N / 2 + 1, 1e-9f);
-        pending.clear(); pending.reserve(N * 2); pend_pos = 0;
-        plan = fftwf_plan_dft_1d(N, (fftwf_complex*)fin.data(), (fftwf_complex*)fout.data(),
-                                 FFTW_FORWARD, FFTW_ESTIMATE);
-        iplan = fftwf_plan_dft_1d(N, (fftwf_complex*)fout.data(), (fftwf_complex*)fin.data(),
-                                  FFTW_BACKWARD, FFTW_ESTIMATE);
-        fill = 0;
-        primed = false;
-        ready = true;
-    }
-
-    void process(const float* x, int n, std::vector<float>& y) {
-        y.clear(); y.reserve(n + hop);
-        for (int i = 0; i < n; i++) {
-            in_buf[fill++] = x[i];
-            if (fill >= N) {
-                frame();
-                for (int k = 0; k < hop; k++) pending.push_back(ola[k]);
-                std::memmove(ola.data(), ola.data() + hop, (N - hop) * sizeof(float));
-                std::fill(ola.begin() + (N - hop), ola.end(), 0.0f);
-                std::memmove(in_buf.data(), in_buf.data() + hop, (N - hop) * sizeof(float));
-                fill = N - hop;
-            }
-            if (pend_pos < pending.size()) y.push_back(pending[pend_pos++]);
-            else y.push_back(0.0f);
-        }
-        if (pend_pos > 4096) {                      // 及时回收
-            pending.erase(pending.begin(), pending.begin() + pend_pos);
-            pend_pos = 0;
-        }
-    }
-
-    void frame() {
-        for (int k = 0; k < N; k++) fin[k] = cfloat(in_buf[k] * win[k], 0.0f);
-        fftwf_execute(plan);
-        for (int k = 0; k <= N / 2; k++) {
-            float p = fout[k].real() * fout[k].real() + fout[k].imag() * fout[k].imag();
-            if (!primed) {                       // 第一帧直接当噪声底
-                noise[k] = p;
-                fout[N - k] = fout[k];
-                continue;
-            }
-            noise[k] = std::min(p, noise[k] * 1.01f + 1e-12f);  // 最小统计：只跟随更安静的部分
-            float g = (p > 1e-12f) ? (1.0f - strength * noise[k] / p) : 0.0f;
-            g = std::max(g, 0.10f);
-            fout[k] *= g;
-            if (k > 0 && k < N / 2) fout[N - k] *= g;
-        }
-        primed = true;
-        fftwf_execute(iplan);
-        // 只做分析加窗，合成不加窗：Hann 在 50% 重叠下窗口和正好为 1，IFFT 需除以 N
-        const float norm = 1.0f / (float)N;
-        for (int k = 0; k < N; k++) ola[k] += fin[k].real() * norm;
-    }
-};
-
 // ------------------------------------------------------------------ DSP 工具
 static void design_lowpass(std::vector<float>& h, int taps, double cutoff_norm) {
     h.resize(taps);
@@ -747,8 +666,6 @@ class Sdr {
     Fir chan_i_, chan_q_;          // 解调前的通道低通（抗邻道/混叠）
     double chan_bw_ = 0;
     std::string drv_, hw_;
-    Denoiser den_;
-    std::vector<float> den_out_;
 
     void set_gain_ui(double ui) {
         if (!dev_) return;
@@ -852,8 +769,7 @@ json Sdr::params_json() {
     return json{{"freq", g_p.freq}, {"rate", g_p.rate}, {"offset", g_p.offset},
                 {"bw", g_p.bw}, {"squelch", g_p.squelch}, {"gain", g_p.gain},
                 {"mode", g_p.mode}, {"bits", g_p.bits}, {"paused", g_p.paused},
-                {"spec_fps", g_p.spec_fps},
-                {"denoise", g_p.denoise}, {"denoise_amt", g_p.denoise_amt}};
+                {"spec_fps", g_p.spec_fps}};
 }
 
 void Sdr::apply(const json& kw) {
@@ -881,9 +797,6 @@ void Sdr::apply(const json& kw) {
         }
         if (kw.contains("bits") && kw["bits"].is_number()) g_p.bits = kw["bits"].get<int>();
         if (kw.contains("paused") && kw["paused"].is_boolean()) g_p.paused = kw["paused"].get<bool>();
-        if (kw.contains("denoise") && kw["denoise"].is_boolean()) g_p.denoise = kw["denoise"].get<bool>();
-        if (kw.contains("denoise_amt") && kw["denoise_amt"].is_number())
-            g_p.denoise_amt = std::max(0.0, std::min(1.5, kw["denoise_amt"].get<double>()));
         if (kw.contains("spec_fps") && kw["spec_fps"].is_number()) {
             g_p.spec_fps = std::max(2.0, std::min(60.0, kw["spec_fps"].get<double>()));
             g_spec_fps = g_p.spec_fps;
@@ -1246,13 +1159,6 @@ void Sdr::demod(const cfloat* zin, int n) {
         audio_acc_.push_back(v);
     }
 
-    if (p.denoise && p.mode != "RAW") {
-        if (!den_.ready) den_.init(512);
-        den_.strength = (float)std::max(0.0, std::min(1.5, p.denoise_amt));
-        den_.process(audio_acc_.data(), (int)audio_acc_.size(), den_out_);
-        audio_acc_.assign(den_out_.begin(), den_out_.end());
-    }
-
     bool mute = false;
     if (p.squelch > -99) {
         double sum = 0;
@@ -1417,7 +1323,6 @@ void Sdr::push_status() {
            {"clients", (int)g_clients}, {"snr", (double)g_snr},
            {"audio_rate", audio_rate_out_}, {"error", g_error},
            {"channels", out_ch_}, {"spec_fps", p.spec_fps},
-           {"denoise", p.denoise}, {"denoise_amt", p.denoise_amt},
            {"encoder", g_encoder_kind}};
     broadcast_text(j.dump());
 }

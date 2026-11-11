@@ -538,11 +538,14 @@ class Sdr {
 
     // DSP 状态
     double audio_rate_ = 48000;
+    double audio_rate_out_ = 48000;
     int dem1_ = 1, dec2_ = 1;
     int out_ch_ = 1;            // 音频输出声道数（WFM 立体声时为 2）
     // FM 立体声解码状态
     Fir lr_fir_;                // L+R 低通 15k
     Fir sub_fir_;               // L-R 低通 15k
+    std::vector<float> sum_in_, diff_in_, sum_out_, diff_out_;
+    float pilot_mag_ = 0.0f;
     cfloat pilot_lp_[4] = {{0,0},{0,0},{0,0},{0,0}};
     double pilot_alpha_ = 0.004;
     double ph19_ = 0.0;
@@ -603,9 +606,11 @@ void Sdr::setup_filters() {
     double cutoff = std::min(15000.0, audio_rate_ * 0.45);
     design_lowpass(h, 129, cutoff / (audio_rate_ / 2));
     audio_fir_.init(h);
+    design_lowpass(h, 65, cutoff / (audio_rate_ / 2));
+    lr_fir_.init(h);
     // FM 立体声用的 15kHz 低通（L-R 支路）
     double st_cut = std::min(15000.0, audio_rate_ * 0.45);
-    design_lowpass(h, 129, st_cut / (audio_rate_ / 2));
+    design_lowpass(h, 65, st_cut / (audio_rate_ / 2));
     sub_fir_.init(h);
     pilot_alpha_ = 2.0 * M_PI * 80.0 / audio_rate_;   // 导频基带低通 ~80Hz
     float tau = 50e-6f;
@@ -630,6 +635,7 @@ void Sdr::reset_dsp(double rate, const std::string& mode, bool stereo) {
         out_ch_ = 1;
     }
     audio_rate_ = rate / d1 / dec2_;
+    audio_rate_out_ = (out_ch_ == 2) ? audio_rate_ / 2 : audio_rate_;
     pilot_lp_[0] = pilot_lp_[1] = pilot_lp_[2] = pilot_lp_[3] = cfloat(0, 0);
     last8_ = cfloat(0, 0);
     mix_phase8_ = 0;
@@ -966,11 +972,12 @@ void Sdr::demod(const cfloat* zin, int n) {
 
     if (stereo) {
         // ---- FM 立体声：19k 导频 -> 38k 副载波，L+R / L-R 合成 ----
+        // 先把 (L+R) 和 (L-R) 在 125k 域分离，再统一半带抽取到 62.5k 做后续处理
         const double w19 = 2.0 * M_PI * 19000.0 / audio_rate_;
+        sum_in_.clear(); diff_in_.clear();
+        sum_in_.reserve(d2.size()); diff_in_.reserve(d2.size());
         for (size_t i = 0; i < d2.size(); i++) {
             float v = d2[i];
-            float sum = audio_fir_.step(v);          // L+R（15k 低通）
-            // 19k 混频到基带，四级一阶低通取出导频相量
             float c = (float)cos(ph19_), s = (float)sin(ph19_);
             ph19_ += w19;
             if (ph19_ > 2 * M_PI) ph19_ -= 2 * M_PI;
@@ -979,13 +986,20 @@ void Sdr::demod(const cfloat* zin, int n) {
                 pilot_lp_[k] += (float)pilot_alpha_ * ((k == 0 ? m : pilot_lp_[k - 1]) - pilot_lp_[k]);
             cfloat pf = pilot_lp_[3];
             float mag = std::sqrt(pf.real() * pf.real() + pf.imag() * pf.imag());
-            float sub = 0.0f, blend = 0.0f;
+            float sub = 0.0f;
+            pilot_mag_ = mag;
             if (mag > 1e-6f) {
                 float ur = pf.real() / mag, ui = pf.imag() / mag;
                 sub = ur * ur - ui * ui;             // cos(2φ) = 38k 副载波
-                blend = std::min(1.0f, mag * 25.0f); // 导频弱 -> 退单声道
             }
-            float diff = 2.0f * sub_fir_.step(v * sub);
+            sum_in_.push_back(v);
+            diff_in_.push_back(2.0f * v * sub);
+        }
+        lr_fir_.decimate(sum_in_.data(), (int)sum_in_.size(), 2, sum_out_);   // L+R @62.5k
+        sub_fir_.decimate(diff_in_.data(), (int)diff_in_.size(), 2, diff_out_); // L-R @62.5k
+        float blend = std::min(1.0f, pilot_mag_ * 25.0f);
+        for (size_t i = 0; i < sum_out_.size(); i++) {
+            float sum = sum_out_[i], diff = diff_out_[i];
             float L = sum + blend * diff;
             float R = sum - blend * diff;
             deemph_l_ += deemph_a_ * (L - deemph_l_);
@@ -996,6 +1010,7 @@ void Sdr::demod(const cfloat* zin, int n) {
             audio_acc_.push_back(L);
             audio_acc_.push_back(R);
         }
+        audio_rate_out_ = audio_rate_ / 2;
     } else {
         for (size_t i = 0; i < d2.size(); i++) {
             float v = d2[i];
@@ -1172,7 +1187,7 @@ void Sdr::push_status() {
            {"iq_mbps", (double)g_iq_mbps}, {"down_kbps", (double)g_down_kbps},
            {"audio_kbps", (double)g_audio_kbps}, {"codec", "opus"},
            {"clients", (int)g_clients}, {"snr", (double)g_snr},
-           {"audio_rate", audio_rate_}, {"error", g_error},
+           {"audio_rate", audio_rate_out_}, {"error", g_error},
            {"stereo", p.stereo}, {"channels", out_ch_}};
     broadcast_text(j.dump());
 }

@@ -85,6 +85,7 @@ struct Params {
     bool paused = true;
     bool stereo = true;        // FM 立体声解码
     double spec_fps = 12.0;    // 频谱/瀑布刷新率（帧/秒）
+    bool biastee = false;      // RTL-SDR 偏置供电（部分板子上和 LED 共用 GPIO）
     double denoise_amt = 1.0;  // 降噪强度 0..1
 };
 
@@ -777,7 +778,8 @@ json Sdr::params_json() {
     return json{{"freq", g_p.freq}, {"rate", g_p.rate}, {"offset", g_p.offset},
                 {"bw", g_p.bw}, {"squelch", g_p.squelch}, {"gain", g_p.gain},
                 {"mode", g_p.mode}, {"bits", g_p.bits}, {"paused", g_p.paused},
-                {"stereo", g_p.stereo}, {"spec_fps", g_p.spec_fps}};
+                {"stereo", g_p.stereo}, {"spec_fps", g_p.spec_fps},
+                {"biastee", g_p.biastee}};
 }
 
 void Sdr::apply(const json& kw) {
@@ -809,6 +811,13 @@ void Sdr::apply(const json& kw) {
             g_p.spec_fps = std::max(2.0, std::min(60.0, kw["spec_fps"].get<double>()));
             g_spec_fps = g_p.spec_fps;
             logf_("频谱刷新率 -> %.0f fps", g_p.spec_fps);
+        }
+        if (kw.contains("biastee") && kw["biastee"].is_boolean()) {
+            g_p.biastee = kw["biastee"].get<bool>();
+            if (dev_) {
+                try { dev_->writeSetting("biastee", g_p.biastee ? "true" : "false"); }
+                catch (...) {}
+            }
         }
         if (kw.contains("stereo") && kw["stereo"].is_boolean()) {
             if (g_p.stereo != kw["stereo"].get<bool>()) mode_dirty = true;
@@ -862,6 +871,10 @@ bool Sdr::ensure_dev() {
             logf_("设置 IF 带宽不支持: %s", e.what());
         }
         try { dev_->setGainMode(SOAPY_SDR_RX, 0, false); } catch (...) {}
+        try {
+            dev_->writeSetting("biastee", p.biastee ? "true" : "false");
+            logf_("bias tee -> %s", p.biastee ? "on" : "off");
+        } catch (...) {}
         set_gain_ui(p.gain);
         stream_ = dev_->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16);
         if (dev_->activateStream(stream_) != 0) {
@@ -1364,7 +1377,7 @@ void Sdr::push_status() {
            {"clients", (int)g_clients}, {"snr", (double)g_snr},
            {"audio_rate", audio_rate_out_}, {"error", g_error},
            {"stereo", p.stereo}, {"channels", out_ch_}, {"spec_fps", p.spec_fps},
-           {"encoder", g_encoder_kind}};
+           {"encoder", g_encoder_kind}, {"biastee", p.biastee}};
     broadcast_text(j.dump());
 }
 
@@ -1550,6 +1563,10 @@ void Sdr::run() {
             try {
                 dev_->setFrequency(SOAPY_SDR_RX, 0, p.freq);
                 try { dev_->setGainMode(SOAPY_SDR_RX, 0, false); } catch (...) {}
+        try {
+            dev_->writeSetting("biastee", p.biastee ? "true" : "false");
+            logf_("bias tee -> %s", p.biastee ? "on" : "off");
+        } catch (...) {}
         set_gain_ui(p.gain);
             } catch (...) {}
         }

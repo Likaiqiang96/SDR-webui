@@ -83,7 +83,6 @@ struct Params {
     std::string mode = "WFM";
     int bits = 12;
     bool paused = true;
-    bool stereo = true;        // FM 立体声解码
     double spec_fps = 12.0;    // 频谱/瀑布刷新率（帧/秒）
     double denoise_amt = 1.0;  // 降噪强度 0..1
 };
@@ -624,7 +623,7 @@ class Sdr {
   private:
     bool ensure_dev();
     void close_dev();
-    void reset_dsp(double rate, const std::string& mode, bool stereo);
+    void reset_dsp(double rate);
     void read_block();
     void demod(const cfloat* z, int n);
     void push_spectrum();
@@ -716,7 +715,7 @@ Sdr::Sdr() {
     fft_plan_ = fftwf_plan_dft_1d(fft_n_, (fftwf_complex*)fft_in_.data(),
                                   (fftwf_complex*)fft_out_.data(), FFTW_FORWARD, FFTW_ESTIMATE);
     mark_ = now_s();
-    reset_dsp(g_p.rate, g_p.mode, g_p.stereo);
+    reset_dsp(g_p.rate);
 }
 
 Sdr::~Sdr() {
@@ -745,22 +744,15 @@ void Sdr::setup_filters() {
     dc_coef_ = 1.0f - 2.0f * (float)M_PI * 20.0f / (float)audio_rate_;
 }
 
-void Sdr::reset_dsp(double rate, const std::string& mode, bool stereo) {
+void Sdr::reset_dsp(double rate) {
     int d1 = (int)lround(rate / 1e6);
     if (d1 < 1) d1 = 1;
     if (d1 > 8) d1 = 8;
     dem1_ = d1;
-    bool wfm = (mode == "WFM") && stereo;
-    if (wfm) {
-        // MPX 需要 ~53kHz 以上带宽：抽到 ~125k 再做立体声解码
-        dec2_ = std::max(1, (int)lround((rate / d1) / 125000.0));
-        out_ch_ = 2;
-    } else {
-        dec2_ = std::max(1, (int)lround((rate / d1) / 48000.0));
-        out_ch_ = 1;
-    }
+    dec2_ = std::max(1, (int)lround((rate / d1) / 48000.0));
+    out_ch_ = 1;
     audio_rate_ = rate / d1 / dec2_;
-    audio_rate_out_ = (out_ch_ == 2) ? audio_rate_ / 2 : audio_rate_;
+    audio_rate_out_ = audio_rate_;
     pilot_lp_[0] = pilot_lp_[1] = pilot_lp_[2] = pilot_lp_[3] = cfloat(0, 0);
     last8_ = cfloat(0, 0);
     mix_phase8_ = 0;
@@ -777,7 +769,7 @@ json Sdr::params_json() {
     return json{{"freq", g_p.freq}, {"rate", g_p.rate}, {"offset", g_p.offset},
                 {"bw", g_p.bw}, {"squelch", g_p.squelch}, {"gain", g_p.gain},
                 {"mode", g_p.mode}, {"bits", g_p.bits}, {"paused", g_p.paused},
-                {"stereo", g_p.stereo}, {"spec_fps", g_p.spec_fps}};
+                {"spec_fps", g_p.spec_fps}};
 }
 
 void Sdr::apply(const json& kw) {
@@ -809,10 +801,6 @@ void Sdr::apply(const json& kw) {
             g_p.spec_fps = std::max(2.0, std::min(60.0, kw["spec_fps"].get<double>()));
             g_spec_fps = g_p.spec_fps;
             logf_("频谱刷新率 -> %.0f fps", g_p.spec_fps);
-        }
-        if (kw.contains("stereo") && kw["stereo"].is_boolean()) {
-            if (g_p.stereo != kw["stereo"].get<bool>()) mode_dirty = true;
-            g_p.stereo = kw["stereo"].get<bool>();
         }
         if (kw.contains("denoise_amt") && kw["denoise_amt"].is_number()) g_p.denoise_amt = kw["denoise_amt"].get<double>();
     }
@@ -851,6 +839,22 @@ bool Sdr::ensure_dev() {
             std::lock_guard<std::mutex> lk(g_mtx);
             p = g_p;
         }
+        // 采样率不在设备支持范围时自动取最近的有效值（RTL-SDR 最高 3.2 MSps）
+        {
+            double req = p.rate, best = req, bestd = 1e18;
+            try {
+                for (auto& r : dev_->getSampleRateRange(SOAPY_SDR_RX, 0)) {
+                    double v = std::min(std::max(req, r.minimum()), r.maximum());
+                    double d = std::fabs(v - req);
+                    if (d < bestd) { bestd = d; best = v; }
+                }
+            } catch (...) {}
+            if (std::fabs(best - req) > 1.0) {
+                logf_("采样率 %.2f MSps 不支持，改用 %.2f MSps", req / 1e6, best / 1e6);
+                p.rate = best;
+                { std::lock_guard<std::mutex> lk(g_mtx); g_p.rate = best; }
+            }
+        }
         dev_->setSampleRate(SOAPY_SDR_RX, 0, p.rate);
         dev_->setFrequency(SOAPY_SDR_RX, 0, p.freq);
         // 模拟中频带宽（RSP1 的 IF 滤波器）：窄一点能挡邻道强台
@@ -868,7 +872,7 @@ bool Sdr::ensure_dev() {
             logf_("activateStream 失败");
             throw std::runtime_error("activateStream failed");
         }
-        reset_dsp(p.rate, p.mode, p.stereo);
+        reset_dsp(p.rate);
         g_running = true;
         // 识别 SDR 型号 -> ADC 位数（MSi2500/SDRplay = 12bit，RTL2832U = 8bit）
         try {
@@ -1141,63 +1145,18 @@ void Sdr::demod(const cfloat* zin, int n) {
     auto& d2 = d2_buf_;
     dec_fir_.decimate(a, nd, dec2_, d2);   // WFM 立体声时 d2 是 ~125k 的 MPX
 
-    const bool stereo = (out_ch_ == 2) && (p.mode == "WFM");
-    double cutoff = std::min((p.mode == "WFM") ? 15000.0 : bw / 2.0, audio_rate_ * 0.45);
+    double cutoff = std::min((p.mode == "WFM") ? 15000.0 : p.bw / 2.0, audio_rate_ * 0.45);
     bool need_lp = cutoff < audio_rate_ * 0.45;
-
-    if (stereo) {
-        // ---- FM 立体声：19k 导频 -> 38k 副载波，L+R / L-R 合成 ----
-        // 先把 (L+R) 和 (L-R) 在 125k 域分离，再统一半带抽取到 62.5k 做后续处理
-        const double w19 = 2.0 * M_PI * 19000.0 / audio_rate_;
-        sum_in_.clear(); diff_in_.clear();
-        sum_in_.reserve(d2.size()); diff_in_.reserve(d2.size());
-        for (size_t i = 0; i < d2.size(); i++) {
-            float v = d2[i];
-            float c = (float)cos(ph19_), s = (float)sin(ph19_);
-            ph19_ += w19;
-            if (ph19_ > 2 * M_PI) ph19_ -= 2 * M_PI;
-            cfloat m(v * c, -v * s);
-            for (int k = 0; k < 4; k++)
-                pilot_lp_[k] += (float)pilot_alpha_ * ((k == 0 ? m : pilot_lp_[k - 1]) - pilot_lp_[k]);
-            cfloat pf = pilot_lp_[3];
-            float mag = std::sqrt(pf.real() * pf.real() + pf.imag() * pf.imag());
-            float sub = 0.0f;
-            pilot_mag_ = mag;
-            if (mag > 1e-6f) {
-                float ur = pf.real() / mag, ui = pf.imag() / mag;
-                sub = ur * ur - ui * ui;             // cos(2φ) = 38k 副载波
-            }
-            sum_in_.push_back(v);
-            diff_in_.push_back(2.0f * v * sub);
+    for (size_t i = 0; i < d2.size(); i++) {
+        float v = d2[i];
+        if (need_lp) v = audio_fir_.step(v);
+        if (p.mode == "WFM" || p.mode == "NFM") {
+            deemph_state_ = deemph_state_ + deemph_a_ * (v - deemph_state_);
+            v = deemph_state_;
         }
-        lr_fir_.decimate(sum_in_.data(), (int)sum_in_.size(), 2, sum_out_);   // L+R @62.5k
-        sub_fir_.decimate(diff_in_.data(), (int)diff_in_.size(), 2, diff_out_); // L-R @62.5k
-        float blend = std::min(1.0f, pilot_mag_ * 25.0f);
-        for (size_t i = 0; i < sum_out_.size(); i++) {
-            float sum = sum_out_[i], diff = diff_out_[i];
-            float L = sum + blend * diff;
-            float R = sum - blend * diff;
-            deemph_l_ += deemph_a_ * (L - deemph_l_);
-            deemph_r_ += deemph_a_ * (R - deemph_r_);
-            L = deemph_l_; R = deemph_r_;
-            dc_l_ = dc_coef_ * dc_l_ + (1 - dc_coef_) * L; L -= dc_l_;
-            dc_r_ = dc_coef_ * dc_r_ + (1 - dc_coef_) * R; R -= dc_r_;
-            audio_acc_.push_back(L);
-            audio_acc_.push_back(R);
-        }
-        audio_rate_out_ = audio_rate_ / 2;
-    } else {
-        for (size_t i = 0; i < d2.size(); i++) {
-            float v = d2[i];
-            if (need_lp) v = audio_fir_.step(v);
-            if (p.mode == "WFM" || p.mode == "NFM") {
-                deemph_state_ = deemph_state_ + deemph_a_ * (v - deemph_state_);
-                v = deemph_state_;
-            }
-            dc_state_ = dc_coef_ * dc_state_ + (1 - dc_coef_) * v;
-            v -= dc_state_;
-            audio_acc_.push_back(v);
-        }
+        dc_state_ = dc_coef_ * dc_state_ + (1 - dc_coef_) * v;
+        v -= dc_state_;
+        audio_acc_.push_back(v);
     }
 
     bool mute = false;
@@ -1363,7 +1322,7 @@ void Sdr::push_status() {
            {"audio_kbps", (double)g_audio_kbps}, {"codec", "opus"},
            {"clients", (int)g_clients}, {"snr", (double)g_snr},
            {"audio_rate", audio_rate_out_}, {"error", g_error},
-           {"stereo", p.stereo}, {"channels", out_ch_}, {"spec_fps", p.spec_fps},
+           {"channels", out_ch_}, {"spec_fps", p.spec_fps},
            {"encoder", g_encoder_kind}};
     broadcast_text(j.dump());
 }
@@ -1527,7 +1486,7 @@ void Sdr::run() {
             close_dev();
             Params pp;
             { std::lock_guard<std::mutex> lk(g_mtx); pp = g_p; }
-            reset_dsp(pp.rate, pp.mode, pp.stereo);
+            reset_dsp(pp.rate);
             // 音频速率/声道数变了：丢掉旧编码器，通知前端重建 MSE
             {
                 std::lock_guard<std::mutex> lk(g_enc_mtx);

@@ -803,8 +803,10 @@ void Sdr::read_block() {
         g_down_kbps = ((spec_bytes_ - rate_spec_) + (pcm_bytes_ - rate_pcm_)) / dt / 1024.0;
         {
             double o = g_opus_bytes.load();
-            g_audio_kbps = (g_enc_count.load() > 0) ? ((o - rate_opus_) * 8 / dt / 1000.0)
-                                                    : ((pcm_bytes_ - rate_pcm_) * 8 / dt / 1000.0);
+            bool has_enc;
+            { std::lock_guard<std::mutex> lk(g_enc_mtx); has_enc = !g_encs.empty(); }
+            g_audio_kbps = has_enc ? ((o - rate_opus_) * 8 / dt / 1000.0)
+                                   : ((pcm_bytes_ - rate_pcm_) * 8 / dt / 1000.0);
             rate_opus_ = o;
         }
         rate_iq_ = iq_bytes_; rate_spec_ = spec_bytes_; rate_pcm_ = pcm_bytes_;

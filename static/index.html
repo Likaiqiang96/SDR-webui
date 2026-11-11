@@ -81,6 +81,10 @@
   #bmList .bm .m{color:var(--dim)}
   #bmList .bm .x{color:var(--dim);padding:0 3px}
   #bmList .bm .x:hover{color:var(--bad)}
+  .badge{display:inline-block;padding:3px 10px;border-radius:6px;background:#0a0d12;
+    border:1px solid var(--line);font-weight:600;color:#e6edf3;font-variant-numeric:tabular-nums}
+  .badge.b12{border-color:var(--ok);color:var(--ok)}
+  .badge.b8{border-color:var(--warn);color:var(--warn)}
   .hint{color:var(--dim);font-size:11px;margin-top:6px;line-height:1.45}
   #err{display:none;padding:5px 10px;background:#3d1418;color:#ffb3b8;font-size:12px}
 
@@ -150,7 +154,10 @@
             </select></div>
           <div class="row"><label>增益</label><input type="range" id="gain" min="0" max="42" step="1" value="21"><span class="val" id="gainTxt">21 dB</span></div>
           <div class="row"><label>位深</label>
-            <div class="seg" style="flex:1"><button id="b12" class="on">12-bit</button><button id="b8">8-bit</button></div></div>
+            <div style="flex:1;display:flex;align-items:center;gap:8px">
+              <span id="adcBadge" class="badge">—</span>
+              <span id="adcName" style="color:var(--dim);font-size:11px"></span>
+            </div></div>
           <div class="hr"></div>
           <div class="kv"><span>ADC</span><b id="kAdc">12-bit</b></div>
           <div class="kv"><span>IQ 码率</span><b id="kIq">--</b></div>
@@ -616,7 +623,14 @@ function onJson(m) {
     }
     if (document.activeElement !== $('freqBox')) $('freqBox').value = (vfo() / 1e6).toFixed(6);
     $('modeBox').textContent = m.mode;
-    $('kAdc').textContent = m.bits + '-bit';
+    const ab = m.adc_bits || m.bits || 0;
+    $('kAdc').textContent = ab ? ab + '-bit' : '—';
+    const badge = $('adcBadge');
+    if (badge) {
+      badge.textContent = ab ? ab + '-bit' : '未采集';
+      badge.className = 'badge' + (ab === 12 ? ' b12' : ab === 8 ? ' b8' : '');
+    }
+    if ($('adcName')) $('adcName').textContent = m.adc_name || (ab ? '' : '点 ▶ 开始采集');
     $('kIq').textContent = (m.iq_mbps || 0).toFixed(1) + ' MB/s';
     $('kDown').textContent = (m.down_kbps || 0).toFixed(0) + ' KB/s';
     $('kAud').textContent = (m.codec === 'opus' ? 'Opus ' : 'PCM ') + Math.round(m.audio_kbps) + ' kbps';
@@ -635,8 +649,7 @@ function onJson(m) {
     if (document.activeElement !== $('mode')) $('mode').value = m.mode;
     if (document.activeElement !== $('bw')) { $('bw').value = bwToSlider(m.bw); $('bwTxt').textContent = fmtBw(m.bw); }
     if (document.activeElement !== $('sq')) { $('sq').value = m.squelch; $('sqTxt').textContent = m.squelch <= -99 ? '关闭' : m.squelch + ' dB'; }
-    $('b12').classList.toggle('on', m.bits === 12);
-    $('b8').classList.toggle('on', m.bits === 8);
+
   } else if (m.type === 'audio_reset') {
     if (S.listening && !pcmMode && mseSupported()) restartMse();
   } else if (m.type === 'scan_started') {
@@ -807,8 +820,6 @@ $('step').onchange = () => {
   }
 };
 $('gain').oninput = () => { $('gainTxt').textContent = $('gain').value + ' dB'; send({ cmd: 'set', gain: Number($('gain').value) }); };
-$('b12').onclick = () => send({ cmd: 'set', bits: 12 });
-$('b8').onclick = () => send({ cmd: 'set', bits: 8 });
 $('mode').onchange = () => { const mode = $('mode').value; send({ cmd: 'set', mode, bw: MODE_BW[mode] || 10000 }); };
 $('bw').oninput = () => { const bw = sliderToBw(Number($('bw').value)); $('bwTxt').textContent = fmtBw(bw); send({ cmd: 'set', bw }); };
 $('sq').oninput = () => { const v = Number($('sq').value); $('sqTxt').textContent = v <= -99 ? '关闭' : v + ' dB'; send({ cmd: 'set', squelch: v }); };

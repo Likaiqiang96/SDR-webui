@@ -244,6 +244,8 @@ class SDR(threading.Thread):
         self.stream = None
         self.buf = np.empty(2 * READ_N, dtype=np.int16)
         self.err = ''
+        self.adc_bits = 0
+        self.adc_name = ''
         self._dirty = True
         self.scan_req = False
         self.scan_out = None
@@ -287,12 +289,38 @@ class SDR(threading.Thread):
         self.opus_bytes = 0
 
     # ---------- 设备 ----------
+    @staticmethod
+    def _pick_device():
+        """优先 SDRplay，其次 Airspy/RTL 等"""
+        try:
+            devs = [dict(k) for k in SoapySDR.Device.enumerate()]
+        except Exception:
+            devs = []
+        rank = {'sdrplay': 0, 'airspy': 1, 'rtlsdr': 2, 'hackrf': 3, 'lime': 4, 'bladerf': 5}
+        devs.sort(key=lambda d: rank.get(d.get('driver', ''), 9))
+        return devs[0] if devs else {'driver': 'sdrplay'}
+
+    def _detect_adc(self, dev):
+        """按驱动/型号判断 ADC 位数：MSi2500(SDRplay) = 12bit，RTL2832U = 8bit"""
+        try:
+            drv = dev.getDriverKey()
+            hw = dev.getHardwareKey()
+        except Exception:
+            drv, hw = '', ''
+        if drv in ('rtlsdr', 'hackrf', 'osmosdr'):
+            self.adc_bits = 8
+        elif drv in ('sdrplay', 'airspy', 'lime', 'bladerf', 'uhd'):
+            self.adc_bits = 12
+        else:
+            self.adc_bits = 12 if drv else 0
+        self.adc_name = ('%s/%s' % (drv, hw)) if drv else ''
+
     def _ensure_dev(self):
         if self.dev is not None:
             return True
         p = self.params
         try:
-            dev = SoapySDR.Device("driver=sdrplay")
+            dev = SoapySDR.Device(self._pick_device())
             dev.setSampleRate(SOAPY_SDR_RX, 0, p['rate'])
             dev.setFrequency(SOAPY_SDR_RX, 0, p['freq'])
             dev.setGainMode(SOAPY_SDR_RX, 0, False)
@@ -304,7 +332,9 @@ class SDR(threading.Thread):
             self._dirty = False
             self.err = ''
             self._reset_dsp(p['rate'])
-            log('SDR 已打开: %.3f MHz, %.2f MSps' % (p['freq'] / 1e6, p['rate'] / 1e6))
+            self._detect_adc(dev)
+            log('SDR 已打开: %.3f MHz, %.2f MSps (%d-bit ADC)' %
+                (p['freq'] / 1e6, p['rate'] / 1e6, self.adc_bits))
             return True
         except Exception as e:
             self.err = str(e)
@@ -425,13 +455,7 @@ class SDR(threading.Thread):
         x = raw.astype(np.float32) / 32768.0
         z = x[0::2] + 1j * x[1::2]
 
-        bits = p['bits']
-        if bits == 8:
-            # 等效 8-bit ADC/rtl_tcp 8-bit 流：只保留 256 级
-            q = np.clip(np.round(z * 128.0), -128, 127)
-            z = (q / 128.0).astype(np.complex64)
-        else:
-            z = z.astype(np.complex64)
+        z = z.astype(np.complex64)
 
         now = time.time()
         # ---- 频谱 ----
@@ -621,7 +645,9 @@ class SDR(threading.Thread):
             'freq': p['freq'],
             'rate': p['rate'],
             'gain': p['gain'],
-            'bits': p['bits'],
+            'bits': getattr(self, 'adc_bits', 0),
+            'adc_bits': getattr(self, 'adc_bits', 0),
+            'adc_name': getattr(self, 'adc_name', ''),
             'mode': p['mode'],
             'audio_rate': round(self.audio_rate, 1),
             'iq_mbps': round(self.iq_rate, 2),

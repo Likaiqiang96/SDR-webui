@@ -93,6 +93,9 @@ static std::atomic<int> g_clients{0};
 static std::atomic<bool> g_scan_req{false};
 static std::atomic<double> g_iq_mbps{0}, g_down_kbps{0}, g_audio_kbps{0};
 static std::atomic<double> g_snr{0};
+static std::atomic<int> g_adc_bits{0};      // 0 = 未知（设备没开）
+static std::mutex g_adc_mtx;
+static std::string g_adc_name;
 static std::atomic<bool> g_running{false};
 static std::string g_error;
 
@@ -566,6 +569,23 @@ bool Sdr::ensure_dev() {
             reset_dsp(p.rate);
         }
         g_running = true;
+        // 识别 SDR 型号 -> ADC 位数（MSi2500/SDRplay = 12bit，RTL2832U = 8bit）
+        try {
+            std::string drv = dev_->getDriverKey();
+            std::string hw = dev_->getHardwareKey();
+            int adc = 12;
+            if (drv == "rtlsdr" || drv == "hackrf" || drv == "osmosdr") adc = 8;
+            else if (drv == "sdrplay" || drv == "airspy" || drv == "lime" ||
+                     drv == "bladerf" || drv == "uhd") adc = 12;
+            g_adc_bits = adc;
+            {
+                std::lock_guard<std::mutex> lk(g_adc_mtx);
+                g_adc_name = drv + "/" + hw;
+            }
+            logf_("设备 %s / %s -> %d-bit ADC", drv.c_str(), hw.c_str(), adc);
+        } catch (std::exception& e) {
+            g_adc_bits = 0;
+        }
         logf_("SDR 已打开: %.3f MHz, %.2f MSps", p.freq / 1e6, p.rate / 1e6);
         return true;
     } catch (std::exception& e) {
@@ -587,6 +607,7 @@ void Sdr::close_dev() {
     } catch (...) {}
     dev_ = nullptr;
     g_running = false;
+    g_adc_bits = 0;
     logf_("SDR 已释放");
 }
 
@@ -600,22 +621,8 @@ void Sdr::read_block() {
 
     if ((int)z_buf_.size() < n) z_buf_.resize(n);
     const float scale = 1.0f / 32768.0f;
-    int bits;
-    {
-        std::lock_guard<std::mutex> lk(g_mtx);
-        bits = g_p.bits;
-    }
-    if (bits == 8) {
-        // 等效 8-bit ADC（rtl_tcp 8-bit 流）：只保留 256 级，用于和 12-bit 对比
-        for (int i = 0; i < n; i++) {
-            float qr = std::max(-128.0f, std::min(127.0f, (float)lrintf(buf_[2 * i] * scale * 128.0f)));
-            float qi = std::max(-128.0f, std::min(127.0f, (float)lrintf(buf_[2 * i + 1] * scale * 128.0f)));
-            z_buf_[i] = cfloat(qr / 128.0f, qi / 128.0f);
-        }
-    } else {
-        for (int i = 0; i < n; i++)
-            z_buf_[i] = cfloat(buf_[2 * i] * scale, buf_[2 * i + 1] * scale);
-    }
+    for (int i = 0; i < n; i++)
+        z_buf_[i] = cfloat(buf_[2 * i] * scale, buf_[2 * i + 1] * scale);
     cfloat* z = z_buf_.data();
 
     iq_bytes_ += (double)n * 4;
@@ -850,7 +857,8 @@ void Sdr::push_status() {
         p = g_p;
     }
     json j{{"type", "status"}, {"freq", p.freq}, {"offset", p.offset}, {"rate", p.rate},
-           {"mode", p.mode}, {"bits", p.bits}, {"bw", p.bw}, {"squelch", p.squelch},
+           {"mode", p.mode}, {"bits", p.bits}, {"adc_bits", (int)g_adc_bits},
+           {"adc_name", g_adc_name}, {"bw", p.bw}, {"squelch", p.squelch},
            {"gain", p.gain}, {"running", (bool)g_running}, {"paused", p.paused},
            {"iq_mbps", (double)g_iq_mbps}, {"down_kbps", (double)g_down_kbps},
            {"audio_kbps", (double)g_audio_kbps}, {"codec", "opus"},

@@ -575,12 +575,6 @@ function drawBandplan() {
       gBand.fillText(b.name, Math.max(2, x1 + 3), h - 4);
     }
   }
-  // 当前 VFO 所在波段名
-  const cur = bands.find(b => vfo() >= b.start && vfo() <= b.end);
-  if (cur) {
-    gBand.fillStyle = 'rgba(230,237,243,.85)'; gBand.font = `${9 * dpr}px sans-serif`;
-    gBand.fillText(cur.name, 3, 11 * dpr);
-  }
 }
 
 /* ---------- WS ---------- */
